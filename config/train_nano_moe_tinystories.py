@@ -7,11 +7,11 @@ import time
 wandb_log = True
 init_from = 'scratch'
 wandb_project = 'nano-moe'
-wandb_run_name ='gpt2-124M-moe-owt ' + time.strftime('%Y-%m-%d %H:%M:%S')
+wandb_run_name ='tinystories-moe' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 # model/moe settings
-n_exp = 16
-top_k = 4
+n_exp = 4
+top_k = 2
 use_aux_loss = True
 aux_loss_weight = 0.01
 use_router_z_loss = True

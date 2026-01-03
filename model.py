@@ -649,6 +649,8 @@ class GPT(nn.Module):
                 "5070 ti": 176e12,  # RTX 5070 Ti
                 "5080": 225e12,  # RTX 5080
                 "b200": 2250e12,  # B200
+                "rtx 6000 ada": 364e12,
+                "rtx a6000": 155e12,   # dense tensor (BF16/FP16) approx; datasheet tensor is 309.7 TFLOPS with sparsity
             }
 
             # Pick the first entry whose key is a substring of the device name; fall back to 0.
@@ -656,7 +658,10 @@ class GPT(nn.Module):
         else:
             # If running on CPU or an unknown accelerator, return -1 
             flops_promised = -1
-        mfu = flops_achieved / flops_promised
+        try:
+            mfu = flops_achieved / flops_promised
+        except:
+            breakpoint()
         return mfu
 
     @torch.no_grad()

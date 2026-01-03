@@ -13,11 +13,6 @@ import numpy as np
 from tqdm import tqdm
 import pickle
 
-
-
-
-
-
 def prepare_data(data_dir=None, tokenizer_repo="niklassheth/tinystories-tokenizer"):
     """
     Download, tokenize, and save TinyStories dataset
