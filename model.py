@@ -17,7 +17,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from manager import MANAGER
-
+from transformers.activations import SiLUActivation
 
 class CausalSelfAttention(nn.Module):
 
@@ -272,11 +272,53 @@ class MLPExperts(nn.Module):
             x += self.proj_bias
         return x
 
+# Borrowed Qwen3MoeMLP implementation from modeling_qwen3_moe.py.
+class Qwen3MLP(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.hidden_size = config.n_embd
+        self.intermediate_size = 4 * config.n_embd
+        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        # up_proj -> c_fc, down_proj -> c_proj
+        # to ensure minimal code changes when switching between Qwen3MoeMLP and regular MLP.
+        self.c_fc = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+        self.c_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        self.act_fn = SiLUActivation()
+
+    def forward(self, x):
+        down_proj = self.c_proj(self.act_fn(self.gate_proj(x)) * self.c_fc(x))
+        return down_proj
+
+class Qwen3MLPExperts(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.n_exp = config.n_exp
+        self.hidden_size = config.n_embd
+        self.intermediate_size = 4 * config.n_embd
+
+        self.gate_proj = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
+        self.c_fc = nn.Parameter(torch.empty(self.n_exp, self.hidden_size, self.intermediate_size))
+        self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
+
+        self.act_fn = SiLUActivation()
+
+    def forward(self, x):
+        gate_out = torch.bmm(x, self.gate_proj)
+        fc_out = torch.bmm(x, self.c_fc)
+        x = self.act_fn(gate_out) * fc_out
+        x = torch.bmm(x, self.c_proj)
+        return x
+
 class MOELayer(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.router = Router(config)
-        self.experts = MLPExperts(config)
+        if getattr(config, 'use_qwen3_moe_mlp', False) and config.use_qwen3_moe_mlp:
+            self.experts = Qwen3MLPExperts(config)
+        else:
+            self.experts = MLPExperts(config)
+
         self.n_exp = config.n_exp
         self.top_k = config.top_k
 
@@ -372,7 +414,7 @@ class GPTConfig:
     use_switch_tfm_init: bool = False  # use weight init scheme from Switch Transformer
     switch_tfm_init_scale: float = 1.0
     router_use_full_prec: bool = False  # use float32 precision in the router
-
+    use_qwen3_moe_mlp: bool = False  # use Qwen3-style MoE MLPs
 
 class GPT(nn.Module):
 

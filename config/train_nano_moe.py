@@ -22,6 +22,7 @@ eval_capacity = 2.0
 stride = 2
 use_switch_tfm_init = True
 router_use_full_prec = True
+use_qwen3_moe_mlp = True
 
 # use smaller GPT model
 n_layer = 8
