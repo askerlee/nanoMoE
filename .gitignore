@@ -7,7 +7,7 @@ __pycache__/
 *.pkl
 *.pt
 *.pyc
-input.txt
+*.txt
 env/
 venv/
 wandb/

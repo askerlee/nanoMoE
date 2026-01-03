@@ -302,7 +302,9 @@ class Qwen3MLPExperts(nn.Module):
         self.c_proj = nn.Parameter(torch.empty(self.n_exp, self.intermediate_size, self.hidden_size))
 
         self.act_fn = SiLUActivation()
-
+        self.fc_bias = None
+        self.proj_bias = None
+        
     def forward(self, x):
         gate_out = torch.bmm(x, self.gate_proj)
         fc_out = torch.bmm(x, self.c_fc)
@@ -500,7 +502,7 @@ class GPT(nn.Module):
             # always initialize bias to zero
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, MLPExperts):
+        elif isinstance(module, MLPExperts) or isinstance(module, Qwen3MLPExperts):
             # we have to init expert weights manually because
             # nn.Parameter is not a type of module in torch
             if self.config.use_switch_tfm_init:
@@ -515,6 +517,15 @@ class GPT(nn.Module):
                     a=-2*c_fc_std,
                     b=2*c_fc_std,
                 )
+                if isinstance(module, Qwen3MLPExperts):
+                    # also init gate_proj the same way as c_fc, as their shapes are the same
+                    torch.nn.init.trunc_normal_(
+                        module.gate_proj,
+                        mean=0.0,
+                        std=c_fc_std,
+                        a=-2*c_fc_std,
+                        b=2*c_fc_std,
+                    )
 
                 c_proj_fan_in = module.c_proj.shape[-2]
                 c_proj_std = (scale / c_proj_fan_in) ** 0.5
@@ -529,6 +540,8 @@ class GPT(nn.Module):
                 # perform standard (normal) initialization of weights
                 torch.nn.init.normal_(module.c_fc, mean=0.0, std=0.02)
                 torch.nn.init.normal_(module.c_proj, mean=0.0, std=0.02)
+                if isinstance(module, Qwen3MLPExperts):
+                    torch.nn.init.normal_(module.gate_proj, mean=0.0, std=0.02)
 
             # bias is always initialized to zero
             if module.fc_bias is not None:
@@ -619,6 +632,8 @@ class GPT(nn.Module):
         sd_keys_hf = sd_hf.keys()
         sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')] # ignore these, just a buffer
         sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')] # same, just the mask (buffer)
+        # This is loading the weights of the same params from pretrained GPT-2 models.
+        # Therefore, the newly added gate_proj in Qwen3MLP and Qwen3MLPExperts is not present here.
         transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
         # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
         # this means that we have to transpose these weights when we import them
