@@ -19,6 +19,7 @@ from torch.nn import functional as F
 from manager import MANAGER
 from transformers.activations import SiLUActivation
 
+
 class CausalSelfAttention(nn.Module):
 
     def __init__(self, config):
@@ -72,13 +73,14 @@ class Router(nn.Module):
         self.router_use_full_prec = config.router_use_full_prec
 
         # auxiliary / load balancing loss settings
-        self.use_aux_loss = config.use_aux_loss
-        self.use_router_z_loss = config.use_router_z_loss
+        self.use_aux_loss           = config.use_aux_loss
+        self.use_router_z_loss      = config.use_router_z_loss
 
         # linear projection for (noisy) softmax gating
         # no bias is used, see page 4 eq (4) in (https://arxiv.org/abs/1701.06538)
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
         self.w_noise = nn.Linear(config.n_embd, config.n_exp, bias=False) if self.use_noisy_top_k else None
+
     def forward(self, x):
         """
         Computes routing information for tokens, including which experts to use,
@@ -109,7 +111,7 @@ class Router(nn.Module):
                 if self.use_router_z_loss:
                     z_loss = self.compute_router_z_loss(logits.view(B, T, -1))
                     MANAGER.add_router_z_loss(z_loss)
-                
+
                 # Find top-k choices for each token
                 top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1) # [B*T, k]
                 
@@ -261,7 +263,6 @@ class MLPExperts(nn.Module):
         # Use ReLU-squared activation
         self.act = ReLUSquared()
     
-
     def forward(self, x):
         x = torch.bmm(x, self.c_fc)
         if self.bias:
@@ -304,7 +305,7 @@ class Qwen3MLPExperts(nn.Module):
         self.act_fn = SiLUActivation()
         self.fc_bias = None
         self.proj_bias = None
-        
+
     def forward(self, x):
         gate_out = torch.bmm(x, self.gate_proj)
         fc_out = torch.bmm(x, self.c_fc)
@@ -318,11 +319,14 @@ class MOELayer(nn.Module):
         self.router = Router(config)
         if getattr(config, 'use_qwen3_moe_mlp', False) and config.use_qwen3_moe_mlp:
             self.experts = Qwen3MLPExperts(config)
+            self.use_qwen3_moe_mlp = True
         else:
             self.experts = MLPExperts(config)
+            self.use_qwen3_moe_mlp = False
 
         self.n_exp = config.n_exp
         self.top_k = config.top_k
+        self.use_router_ortho_loss = config.use_router_ortho_loss
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size() # Keep track of original shape
@@ -332,6 +336,9 @@ class MOELayer(nn.Module):
         # and return routing info shaped for a flattened list of tokens.
         expert_mask, router_probs, top_k_indices, rank = self.router(x)
         # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.
+        if self.training and self.use_router_ortho_loss:
+            ortho_loss = self.compute_router_ortho_loss()
+            MANAGER.add_router_ortho_loss(ortho_loss)
 
         # Now, flatten the input tensor for the dispatch operation
         x_flat = x.view(B * T, C)
@@ -375,6 +382,19 @@ class MOELayer(nn.Module):
         # Reshape output back to the original input shape
         return output_flat.view(B, T, C)
 
+    def compute_router_ortho_loss(self):
+        if not self.use_qwen3_moe_mlp:
+            # only apply orthogonality loss when using Qwen3-style MoE MLPs
+            return torch.tensor(0.0, device=self.w_g.weight.device)
+        else:
+            # compute orthogonality loss between router weight vectors and expert gate projection vectors
+            router_weights = self.router.w_g.weight  # [n_exp, n_embd]
+            gate_proj_weights = self.experts.gate_proj  # [n_exp, n_embd, intermediate_size]
+            gate_proj_mean = gate_proj_weights.mean(dim=-1)  # [n_exp, n_embd]
+            ortho_losses = (router_weights * gate_proj_mean).sum(dim=-1)  # [n_exp]
+            ortho_losses = torch.clamp(ortho_losses, min=0.0)  # only penalize positive correlations
+            return ortho_losses.mean()
+
 class Block(nn.Module):
 
     def __init__(self, config, use_moe=False):
@@ -406,9 +426,11 @@ class GPTConfig:
     top_k: int = 2
     use_aux_loss: bool = False # apply auxiliary loss (from Switch Transformer) in router
     use_router_z_loss: bool = False # apply router z loss (from ST-MoE)
+    use_router_ortho_loss: bool = False # apply router orthogonality loss
     use_noisy_top_k: bool = False
     aux_loss_weight: float = 0.01 # default setting from Switch Transformer (see top of page 8)
     router_z_loss_weight: float = 0.001 # default setting from ST-MoE (see page 8 eq. 6)
+    router_ortho_loss_weight: float = 0.001 # default weight for orthogonality loss
     train_capacity: float = 1.25  # default setting from ST-MoE (see top of page 6)
     eval_capacity: float = 2.0
     min_capacity: int = 4  # minimum batch size to send to any single expert
@@ -564,6 +586,7 @@ class GPT(nn.Module):
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
+        router_ortho_loss = 0
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -577,12 +600,16 @@ class GPT(nn.Module):
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
                 loss += self.config.router_z_loss_weight * MANAGER.aggregate_router_z_loss()
                 MANAGER.reset_router_z_loss()
+            if self.config.n_exp > 1 and self.config.use_router_ortho_loss:
+                router_ortho_loss = MANAGER.aggregate_router_ortho_loss()
+                loss += self.config.router_ortho_loss_weight * router_ortho_loss
+                MANAGER.reset_router_ortho_loss()
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss
+        return logits, loss, router_ortho_loss
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary

@@ -68,9 +68,11 @@ n_exp = 1 # if n_exp = 1 we just use regular MLP layers
 top_k = 2
 use_aux_loss = False
 use_router_z_loss = False
+use_router_ortho_loss = False
 use_noisy_top_k = False
 aux_loss_weight = 0.001
 router_z_loss_weight = 0.01
+router_ortho_loss_weight = 0.001
 train_capacity = 1.25
 eval_capacity = 2.0
 min_capacity = 4
@@ -215,8 +217,11 @@ if os.path.exists(meta_path):
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   bias=bias, vocab_size=None, n_exp=n_exp, top_k=top_k,
                   use_aux_loss=use_aux_loss, use_router_z_loss=use_router_z_loss,
+                  use_router_ortho_loss=use_router_ortho_loss,
                   use_noisy_top_k=use_noisy_top_k, aux_loss_weight=aux_loss_weight,
-                  router_z_loss_weight=router_z_loss_weight, train_capacity=train_capacity,
+                  router_z_loss_weight=router_z_loss_weight, 
+                  router_ortho_loss_weight=router_ortho_loss_weight,
+                  train_capacity=train_capacity,
                   eval_capacity=eval_capacity, min_capacity=min_capacity, stride=stride,
                   use_switch_tfm_init=use_switch_tfm_init, switch_tfm_init_scale=switch_tfm_init_scale,
                   router_use_full_prec=router_use_full_prec,
@@ -285,7 +290,7 @@ def estimate_loss():
             X, Y = X.to(device), Y.to(device)
             
         with ctx:
-            _, loss = model(X, Y)
+            _, loss, router_ortho_loss = model(X, Y)
         val_losses[k] = loss.item()
     
     model.train()
@@ -404,13 +409,13 @@ for epoch in range(math.ceil(num_epochs)):
         with record_function("forward_backward"):
             with ctx:
                 with record_function("forward"):
-                    logits, loss = model(X, Y)
+                    logits, loss, router_ortho_loss = model(X, Y)
                     loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
-            
+                    
             # backward pass, with gradient scaling if training in fp16
             with record_function("backward"):
                 scaler.scale(loss).backward()
-        
+
         # Only step optimizer every gradient_accumulation_steps iterations
         if (global_iter + 1) % gradient_accumulation_steps == 0:
             with record_function("optimizer_step"):
@@ -454,6 +459,7 @@ for epoch in range(math.ceil(num_epochs)):
                 wandb.log({
                     "train/loss_step": lossf,
                     "train/grad_norm": grad_normf,
+                    "train/router_ortho_loss_step": router_ortho_loss.item(),
                     "lr": lr,
                     "mfu": running_mfu*100,
                     "tok_per_sec": running_tokens_per_sec,
