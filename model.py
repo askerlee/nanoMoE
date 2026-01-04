@@ -392,7 +392,9 @@ class MOELayer(nn.Module):
             gate_proj_weights = self.experts.gate_proj  # [n_exp, n_embd, intermediate_size]
             gate_proj_mean = gate_proj_weights.mean(dim=-1)  # [n_exp, n_embd]
             ortho_losses = (router_weights * gate_proj_mean).sum(dim=-1)  # [n_exp]
-            ortho_losses = torch.clamp(ortho_losses, min=0.0)  # only penalize positive correlations
+            # Square the dot products to penalize both positive and negative correlations
+            ortho_losses = ortho_losses ** 2  
+            # ortho_losses = torch.clamp(ortho_losses, min=0.0)  # only penalize positive correlations
             return ortho_losses.mean()
 
 class Block(nn.Module):

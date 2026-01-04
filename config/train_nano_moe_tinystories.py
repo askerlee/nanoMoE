@@ -10,14 +10,14 @@ wandb_project = 'nano-moe'
 wandb_run_name ='tinystories-moe' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 # model/moe settings
-n_exp = 4
-top_k = 2
+n_exp = 32
+top_k = 4
 use_aux_loss = True
 aux_loss_weight = 0.01
 use_router_z_loss = True
 router_z_loss_weight = 0.001
 use_router_ortho_loss = True
-router_ortho_loss_weight = 0.001
+router_ortho_loss_weight = 0.01
 use_noisy_top_k = False
 train_capacity = 1.25
 eval_capacity = 2.0

@@ -10,14 +10,14 @@ wandb_project = 'nano-moe'
 wandb_run_name ='gpt2-124M-moe-owt ' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 # model/moe settings
-n_exp = 16
+n_exp = 32
 top_k = 4
 use_aux_loss = True
 aux_loss_weight = 0.01
 use_router_z_loss = True
 router_z_loss_weight = 0.001
 use_router_ortho_loss = True
-router_ortho_loss_weight = 0.001
+router_ortho_loss_weight = 0.01
 
 use_noisy_top_k = False
 train_capacity = 1.25
@@ -40,7 +40,7 @@ gradient_accumulation_steps = 2
 
 # epoch-based training
 num_epochs = 1.0
-evals_per_epoch = 50
+evals_per_epoch = 500
 warmup_frac = 0.01
 decay_frac = 0.1
 
