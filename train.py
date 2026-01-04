@@ -44,6 +44,7 @@ eval_iters = 200
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'gpt2*'
+seed = 1337
 
 # wandb logging
 wandb_log = True # False # disabled by default
@@ -117,6 +118,8 @@ profiler_output_dir = './profiler_results' # directory to save profiler results
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 # Remove non-existent variables that were removed during epoch-based conversion
 config_keys = [k for k in config_keys if k not in ['max_iters', 'lr_decay_iters', 'eval_interval']]
+# Put everything in argv[1:] into globals(). If an argument is a config file, exec it,
+# otherwise if it's a --key=value argument, override the corresponding key in globals().
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys}  # will be useful for logging
 print(config)
@@ -145,7 +148,7 @@ else:
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
-torch.manual_seed(1337 + seed_offset)
+torch.manual_seed(seed + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast

@@ -384,10 +384,10 @@ class MOELayer(nn.Module):
 
     def compute_router_ortho_loss(self):
         if not self.use_qwen3_moe_mlp:
-            # only apply orthogonality loss when using Qwen3-style MoE MLPs
+            # Only apply orthogonality loss when using Qwen3-style MoE MLPs
             return torch.tensor(0.0, device=self.w_g.weight.device)
         else:
-            # compute orthogonality loss between router weight vectors and expert gate projection vectors
+            # Compute orthogonality loss between router weight vectors and expert gate projection vectors
             router_weights = self.router.w_g.weight  # [n_exp, n_embd]
             gate_proj_weights = self.experts.gate_proj  # [n_exp, n_embd, intermediate_size]
             gate_proj_mean = gate_proj_weights.mean(dim=-1)  # [n_exp, n_embd]

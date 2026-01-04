@@ -4,6 +4,8 @@ import time
 # launch as the following (e.g. in a screen session) and wait ~5 days:
 # $ torchrun --standalone --nproc_per_node=2 train.py config/train_nano_moe.py
 
+seed = 1337
+
 wandb_log = True
 init_from = 'scratch'
 wandb_project = 'nano-moe'
