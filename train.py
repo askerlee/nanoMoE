@@ -40,8 +40,6 @@ import random
 def seed_worker(worker_seed):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
-    # Deterministic ops (will error if you hit a nondet op)
-    torch.use_deterministic_algorithms(True)
 
     np.random.seed(worker_seed)
     random.seed(worker_seed)
