@@ -734,6 +734,7 @@ class GPT(nn.Module):
                 "l40s": 362e12,  # L40S
                 "a100": 312e12,  # A100 80GB
                 "h100": 990e12,  # H100
+                "h200": 990e12,  # H200 (assumed same as H100 for BF16/FP16)
                 "5070 ti": 176e12,  # RTX 5070 Ti
                 "5080": 225e12,  # RTX 5080
                 "b200": 2250e12,  # B200
