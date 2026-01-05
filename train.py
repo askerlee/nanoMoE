@@ -55,8 +55,8 @@ wandb_run_name = 'gpt2-124M-owt' + str(time.time())
 # tinystories is too easy. We revert to openwebtext.
 dataset = 'openwebtext' #'tinystories' 
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
-batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 1024
+batch_size = 12     # if gradient_accumulation_steps > 1, this is the micro-batch size
+block_size = 1024   # Training tokens per sample
 
 # model
 n_layer = 12
