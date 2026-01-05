@@ -388,10 +388,9 @@ class MOELayer(nn.Module):
             return torch.tensor(0.0, device=self.w_g.weight.device)
         else:
             # Compute orthogonality loss between router weight vectors and expert gate projection vectors
-            router_weights = self.router.w_g.weight  # [n_exp, n_embd]
+            router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
             gate_proj_weights = self.experts.gate_proj  # [n_exp, n_embd, intermediate_size]
-            gate_proj_mean = gate_proj_weights.mean(dim=-1)  # [n_exp, n_embd]
-            ortho_losses = (router_weights * gate_proj_mean).sum(dim=-1)  # [n_exp]
+            ortho_losses = (router_weights * gate_proj_weights).sum(dim=1)  # [n_exp, intermediate_size]
             ortho_losses_weights = torch.ones_like(ortho_losses)
             ortho_losses_weights[ortho_losses < 0] = 0.1         # downweight negative correlations
             # Square the dot products to penalize both positive and negative correlations
