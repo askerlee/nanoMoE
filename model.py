@@ -395,9 +395,8 @@ class MOELayer(nn.Module):
             # Square the dot products to penalize both positive and negative correlations
             ortho_losses = ortho_losses ** 2
             ortho_losses_weights = torch.ones_like(ortho_losses)
-            ortho_losses_weights[ortho_losses < 0] = 0.2
+            ortho_losses_weights[ortho_losses < 0] = 0.1         # downweight negative correlations
             ortho_loss = (ortho_losses * ortho_losses_weights).mean()
-            # ortho_losses = torch.clamp(ortho_losses, min=0.0)  # only penalize positive correlations
             return ortho_loss
 
 class Block(nn.Module):
