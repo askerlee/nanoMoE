@@ -34,6 +34,19 @@ from torch.profiler import profile, record_function, ProfilerActivity
 
 from model import GPTConfig, GPT
 from data.tinystories.dataloader import get_dataloader
+import numpy as np
+import random
+
+def seed_worker(worker_seed):
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    # Deterministic ops (will error if you hit a nondet op)
+    torch.use_deterministic_algorithms(True)
+
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
+    torch.cuda.manual_seed_all(worker_seed)
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) with epoch-based training
@@ -148,7 +161,7 @@ else:
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
-torch.manual_seed(seed + seed_offset)
+seed_worker(seed + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
