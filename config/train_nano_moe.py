@@ -19,7 +19,7 @@ aux_loss_weight = 0.01
 use_router_z_loss = True
 router_z_loss_weight = 0.001
 use_router_ortho_loss = True
-router_ortho_loss_weight = 0.01
+router_ortho_loss_weight = 0.003
 
 use_noisy_top_k = False
 train_capacity = 1.25
