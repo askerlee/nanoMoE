@@ -327,6 +327,7 @@ class MOELayer(nn.Module):
         self.n_exp = config.n_exp
         self.top_k = config.top_k
         self.use_router_ortho_loss = config.use_router_ortho_loss
+        self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size() # Keep track of original shape
@@ -392,7 +393,8 @@ class MOELayer(nn.Module):
             gate_proj_weights = self.experts.gate_proj  # [n_exp, n_embd, intermediate_size]
             ortho_losses = (router_weights * gate_proj_weights).sum(dim=1)  # [n_exp, intermediate_size]
             ortho_losses_weights = torch.ones_like(ortho_losses)
-            ortho_losses_weights[ortho_losses < 0] = 0.1         # downweight negative correlations
+            # downweight or ignore negative correlations
+            ortho_losses_weights[ortho_losses < 0] = self.router_ortho_neg_corr_weight       
             # Square the dot products to penalize both positive and negative correlations
             ortho_losses = ortho_losses ** 2
             ortho_loss = (ortho_losses * ortho_losses_weights).mean()
@@ -434,6 +436,7 @@ class GPTConfig:
     aux_loss_weight: float = 0.01 # default setting from Switch Transformer (see top of page 8)
     router_z_loss_weight: float = 0.001 # default setting from ST-MoE (see page 8 eq. 6)
     router_ortho_loss_weight: float = 0.001 # default weight for orthogonality loss
+    router_ortho_neg_corr_weight: float = 0.1  # weight for negative correlations in router-ortho loss
     train_capacity: float = 1.25  # default setting from ST-MoE (see top of page 6)
     eval_capacity: float = 2.0
     min_capacity: int = 4  # minimum batch size to send to any single expert

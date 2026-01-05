@@ -85,6 +85,7 @@ use_noisy_top_k = False
 aux_loss_weight = 0.001
 router_z_loss_weight = 0.01
 router_ortho_loss_weight = 0.01
+router_ortho_neg_corr_weight = 0.1  # weight for negative correlations in router-ortho loss
 train_capacity = 1.25
 eval_capacity = 2.0
 min_capacity = 4
@@ -235,6 +236,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   use_noisy_top_k=use_noisy_top_k, aux_loss_weight=aux_loss_weight,
                   router_z_loss_weight=router_z_loss_weight, 
                   router_ortho_loss_weight=router_ortho_loss_weight,
+                  router_ortho_neg_corr_weight=router_ortho_neg_corr_weight,
                   train_capacity=train_capacity,
                   eval_capacity=eval_capacity, min_capacity=min_capacity, stride=stride,
                   use_switch_tfm_init=use_switch_tfm_init, switch_tfm_init_scale=switch_tfm_init_scale,
