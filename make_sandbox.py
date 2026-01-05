@@ -39,8 +39,8 @@ with modal.enable_output():
         app=app,
         image=image,
         gpu=args.gpu,
-        timeout=6 * 60 * 60,
-        idle_timeout=6 * 60 * 60,
+        timeout=12 * 60 * 60,
+        idle_timeout=12 * 60 * 60,
         volumes={"/hf_cache": hf_vol},
     )
 
