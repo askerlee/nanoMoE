@@ -19,8 +19,12 @@ aux_loss_weight = 0.01
 use_router_z_loss = True
 router_z_loss_weight = 0.001
 use_router_ortho_loss = True
+use_experts_ortho_loss = True
 router_ortho_loss_weight = 0.001
 router_ortho_neg_corr_weight = 1
+# Only visualize experts orthogonality loss, do not optimize it.
+# This is an ablation study of arXiv:2601.00457.
+experts_ortho_loss_weight = 0
 
 use_noisy_top_k = False
 train_capacity = 1.25

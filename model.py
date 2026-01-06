@@ -328,6 +328,9 @@ class MOELayer(nn.Module):
         self.top_k = config.top_k
         self.use_router_ortho_loss = config.use_router_ortho_loss
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
+        # Should always be True, i.e., always compute experts ortho loss for ablation study.
+        # We just don't optimize it unless the weight is set > 0 in the config.
+        self.use_experts_ortho_loss = config.use_experts_ortho_loss
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size() # Keep track of original shape
@@ -338,8 +341,12 @@ class MOELayer(nn.Module):
         expert_mask, router_probs, top_k_indices, rank = self.router(x)
         # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.
         if self.training and self.use_router_ortho_loss:
-            ortho_loss = self.compute_router_ortho_loss()
-            MANAGER.add_router_ortho_loss(ortho_loss)
+            router_ortho_loss = self.compute_router_ortho_loss()
+            MANAGER.add_router_ortho_loss(router_ortho_loss)
+
+        if self.training and self.use_experts_ortho_loss:
+            experts_ortho_loss = self.compute_experts_ortho_loss()
+            MANAGER.add_experts_ortho_loss(experts_ortho_loss)
 
         # Now, flatten the input tensor for the dispatch operation
         x_flat = x.view(B * T, C)
@@ -400,6 +407,23 @@ class MOELayer(nn.Module):
             ortho_loss = (ortho_losses * ortho_losses_weights).mean()
             return ortho_loss
 
+    # Compute orthogonality loss between expert weight matrices.
+    # This is an ablation study of arXiv:2601.00457.
+    def compute_experts_ortho_loss(self):
+        # Only output experts orthogonality loss when using Qwen3-style MoE MLPs,
+        # to study the impact of router ortho loss on experts ortho loss.
+        if not self.use_qwen3_moe_mlp:
+            return torch.tensor(0.0, device=self.experts.c_fc.device)
+        c_fc_weights = self.experts.c_fc  # [n_exp, n_embd, 4 * n_embd]
+        ortho_losses = []
+        for i in range(self.n_exp):
+            for j in range(i + 1, self.n_exp):
+                # [4 * n_embd * n_embd, 4 * n_embd * n_embd] -> [4 * n_embd * n_embd] -> scalar.
+                ortho_loss = (c_fc_weights[i].flatten() * c_fc_weights[j].flatten()).sum()
+                ortho_losses.append(ortho_loss)
+        # The average of ortho_losses between total (n_exp * (n_exp - 1)) / 2 expert pairs.
+        return torch.stack(ortho_losses).mean()
+
 class Block(nn.Module):
 
     def __init__(self, config, use_moe=False):
@@ -432,11 +456,13 @@ class GPTConfig:
     use_aux_loss: bool = False # apply auxiliary loss (from Switch Transformer) in router
     use_router_z_loss: bool = False # apply router z loss (from ST-MoE)
     use_router_ortho_loss: bool = False # apply router orthogonality loss
+    use_experts_ortho_loss: bool = True # always compute experts orthogonality loss for ablation study
     use_noisy_top_k: bool = False
     aux_loss_weight: float = 0.01 # default setting from Switch Transformer (see top of page 8)
     router_z_loss_weight: float = 0.001 # default setting from ST-MoE (see page 8 eq. 6)
     router_ortho_loss_weight: float = 0.001    # default weight for orthogonality loss
     router_ortho_neg_corr_weight: float = 1  # weight for negative correlations in router-ortho loss
+    experts_ortho_loss_weight: float = 0       # by default, disable experts orthogonality loss
     train_capacity: float = 1.25  # default setting from ST-MoE (see top of page 6)
     eval_capacity: float = 2.0
     min_capacity: int = 4  # minimum batch size to send to any single expert
@@ -610,6 +636,9 @@ class GPT(nn.Module):
                 router_ortho_loss = MANAGER.aggregate_router_ortho_loss()
                 loss += self.config.router_ortho_loss_weight * router_ortho_loss
                 MANAGER.reset_router_ortho_loss()
+            if self.config.n_exp > 1 and self.config.use_experts_ortho_loss:
+                experts_ortho_loss = MANAGER.aggregate_experts_ortho_loss()
+                loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
