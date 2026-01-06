@@ -310,7 +310,7 @@ def estimate_loss():
             X, Y = X.to(device), Y.to(device)
             
         with ctx:
-            _, loss, router_ortho_loss = model(X, Y)
+            _, loss, router_ortho_loss, experts_ortho_loss = model(X, Y)
         val_losses[k] = loss.item()
     
     model.train()
@@ -429,7 +429,7 @@ for epoch in range(math.ceil(num_epochs)):
         with record_function("forward_backward"):
             with ctx:
                 with record_function("forward"):
-                    logits, loss, router_ortho_loss = model(X, Y)
+                    logits, loss, router_ortho_loss, experts_ortho_loss = model(X, Y)
                     loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
                     
             # backward pass, with gradient scaling if training in fp16
@@ -480,6 +480,7 @@ for epoch in range(math.ceil(num_epochs)):
                     "train/loss_step": lossf,
                     "train/grad_norm": grad_normf,
                     "train/router_ortho_loss_step": router_ortho_loss.item(),
+                    "train/experts_ortho_loss_step": experts_ortho_loss.item(),
                     "lr": lr,
                     "mfu": running_mfu*100,
                     "tok_per_sec": running_tokens_per_sec,
