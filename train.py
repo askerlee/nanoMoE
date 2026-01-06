@@ -81,13 +81,15 @@ top_k = 2
 use_aux_loss = False
 use_router_z_loss = False
 use_router_ortho_loss = False
-use_experts_ortho_loss = True
+use_experts_ortho_loss = False
 use_noisy_top_k = False
 aux_loss_weight = 0.001
 router_z_loss_weight = 0.01
 router_ortho_loss_weight = 0.001
 router_ortho_neg_corr_weight = 1  # weight for negative correlations in router-ortho loss
-experts_ortho_loss_weight = 0     # by default, disable experts orthogonality loss. It's just computed for ablation study.
+# experts_ortho_loss is very small due to squared cosine similarities.
+# So its weight is set higher to have a meaningful effect.
+experts_ortho_loss_weight = 0.01  
 train_capacity = 1.25
 eval_capacity = 2.0
 min_capacity = 4

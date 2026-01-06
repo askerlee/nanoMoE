@@ -465,7 +465,9 @@ class GPTConfig:
     router_z_loss_weight: float = 0.001 # default setting from ST-MoE (see page 8 eq. 6)
     router_ortho_loss_weight: float = 0.001    # default weight for orthogonality loss
     router_ortho_neg_corr_weight: float = 1  # weight for negative correlations in router-ortho loss
-    experts_ortho_loss_weight: float = 0       # by default, disable experts orthogonality loss
+    # experts_ortho_loss is very small due to squared cosine similarities.
+    # So its weight is set higher to have a meaningful effect.
+    experts_ortho_loss_weight: float = 0.01  
     train_capacity: float = 1.25  # default setting from ST-MoE (see top of page 6)
     eval_capacity: float = 2.0
     min_capacity: int = 4  # minimum batch size to send to any single expert
