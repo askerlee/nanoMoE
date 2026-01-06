@@ -642,6 +642,7 @@ class GPT(nn.Module):
             if self.config.n_exp > 1 and self.config.use_experts_ortho_loss:
                 experts_ortho_loss = MANAGER.aggregate_experts_ortho_loss()
                 loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
+                MANAGER.reset_experts_ortho_loss()
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
