@@ -410,25 +410,22 @@ class MOELayer(nn.Module):
     # Compute orthogonality loss between expert weight matrices.
     # This is an ablation study of arXiv:2601.00457.
     def compute_experts_ortho_loss(self):
-        # Only output experts orthogonality loss when using Qwen3-style MoE MLPs,
-        # to study the impact of router ortho loss on experts ortho loss.
         if not self.use_qwen3_moe_mlp:
             return torch.tensor(0.0, device=self.experts.c_fc.device)
-        
-        c_fc_weights = self.experts.c_fc  # [n_exp, n_embd, 4 * n_embd]
-        
-        # Flatten each expert's weights: [n_exp, n_embd * 4 * n_embd]
-        flattened = c_fc_weights.view(self.n_exp, -1)
-        
-        # Compute all pairwise dot products at once: [n_exp, n_exp]
-        dot_products = torch.mm(flattened, flattened.t())
-        
-        # Extract upper triangular part (excluding diagonal) to get unique pairs
-        # This gives us all (i, j) pairs where i < j
-        mask = torch.triu(torch.ones_like(dot_products, dtype=torch.bool), diagonal=1)
-        ortho_losses = dot_products[mask]
-        # Average over all (n_exp * (n_exp - 1)) / 2 expert pairs
-        return ortho_losses.mean()
+
+        W = self.experts.c_fc  # [n_exp, n_embd, 4*n_embd]
+        n_exp = W.shape[0]
+        if n_exp < 2:
+            return W.new_zeros(())
+
+        X = W.reshape(n_exp, -1).float()  # do math in fp32. long vector math is unstable in fp16/bf16.
+        X = X / (X.norm(dim=1, keepdim=True) + 1e-12)  # normalize per expert
+
+        G = X @ X.t()  # cosine-sim Gram matrix, diag ~ 1
+        offdiag = torch.triu(G, diagonal=1)
+        # penalize non-orthogonality without sign cancellation
+        loss = (offdiag ** 2).mean()
+        return loss.to(W.dtype)
 
 class Block(nn.Module):
 
