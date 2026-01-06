@@ -6,7 +6,7 @@ https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
 Downloads and tokenizes the data and saves to monolithic .bin files.
 Run simply as:
 $ python prepare.py
-Will save train.bin and val.bin to the local directory "edu_fineweb10B".
+Will save train.bin and val.bin to the same directory as this script.
 """
 
 import os
