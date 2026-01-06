@@ -414,15 +414,21 @@ class MOELayer(nn.Module):
         # to study the impact of router ortho loss on experts ortho loss.
         if not self.use_qwen3_moe_mlp:
             return torch.tensor(0.0, device=self.experts.c_fc.device)
+        
         c_fc_weights = self.experts.c_fc  # [n_exp, n_embd, 4 * n_embd]
-        ortho_losses = []
-        for i in range(self.n_exp):
-            for j in range(i + 1, self.n_exp):
-                # [4 * n_embd * n_embd, 4 * n_embd * n_embd] -> [4 * n_embd * n_embd] -> scalar.
-                ortho_loss = (c_fc_weights[i].flatten() * c_fc_weights[j].flatten()).sum()
-                ortho_losses.append(ortho_loss)
-        # The average of ortho_losses between total (n_exp * (n_exp - 1)) / 2 expert pairs.
-        return torch.stack(ortho_losses).mean()
+        
+        # Flatten each expert's weights: [n_exp, n_embd * 4 * n_embd]
+        flattened = c_fc_weights.view(self.n_exp, -1)
+        
+        # Compute all pairwise dot products at once: [n_exp, n_exp]
+        dot_products = torch.mm(flattened, flattened.t())
+        
+        # Extract upper triangular part (excluding diagonal) to get unique pairs
+        # This gives us all (i, j) pairs where i < j
+        mask = torch.triu(torch.ones_like(dot_products, dtype=torch.bool), diagonal=1)
+        ortho_losses = dot_products[mask]
+        # Average over all (n_exp * (n_exp - 1)) / 2 expert pairs
+        return ortho_losses.mean()
 
 class Block(nn.Module):
 
