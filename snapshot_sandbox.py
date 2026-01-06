@@ -6,5 +6,5 @@ args = parser.parse_args()
 
 sb = modal.Sandbox.from_id(args.sbid)  # reattach to a running sandbox
 img = sb.snapshot_filesystem()         # creates an Image snapshot
-# SNAPSHOT_IMAGE_ID = im-jU0Xu9RdVXSTDEDqniexUe
+# SNAPSHOT_IMAGE_ID = im-sWstQOHXbv5brYzHCwD8Ir
 print("SNAPSHOT_IMAGE_ID =", img.object_id)
