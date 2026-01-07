@@ -4,11 +4,12 @@ class MOEManager:
     losses across multiple MoE layers in the model
     """
 
-    def __init__(self):
+    def __init__(self, ortho_loss_start_layer=0):
         self.aux_loss = []
         self.router_z_loss = []
         self.router_ortho_loss = []
         self.experts_ortho_loss = []
+        self.ortho_loss_start_layer = ortho_loss_start_layer
 
     def reset_aux_loss(self):
         self.aux_loss = []
@@ -41,9 +42,9 @@ class MOEManager:
         return sum(self.router_z_loss)
 
     def aggregate_router_ortho_loss(self):
-        return sum(self.router_ortho_loss)
+        return sum(self.router_ortho_loss[self.ortho_loss_start_layer:])
     
     def aggregate_experts_ortho_loss(self):
-        return sum(self.experts_ortho_loss)
+        return sum(self.experts_ortho_loss[self.ortho_loss_start_layer:])
     
-MANAGER = MOEManager()
+MANAGER = MOEManager(ortho_loss_start_layer=4)
