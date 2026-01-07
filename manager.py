@@ -42,10 +42,12 @@ class MOEManager:
         return sum(self.router_z_loss)
 
     def aggregate_router_ortho_loss(self):
+        # 0.25*8 = 2.0, so start from layer 2, i.e. skip first two layers
         start_layer = int(len(self.router_ortho_loss) * self.ortho_loss_start_frac)
         return sum(self.router_ortho_loss[start_layer:])
     
     def aggregate_experts_ortho_loss(self):
+        # 0.25*8 = 2.0, so start from layer 2, i.e. skip first two layers
         start_layer = int(len(self.experts_ortho_loss) * self.ortho_loss_start_frac)
         return sum(self.experts_ortho_loss[start_layer:])
     

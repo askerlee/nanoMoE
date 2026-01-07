@@ -397,7 +397,8 @@ class MOELayer(nn.Module):
         else:
             # Compute orthogonality loss between router weight vectors and expert gate projection vectors
             router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
-            gate_proj_weights = self.experts.gate_proj  # [n_exp, n_embd, intermediate_size]
+            # Cut off gradients to expert gate projection weights
+            gate_proj_weights = self.experts.gate_proj.detach()  # [n_exp, n_embd, intermediate_size]
             ortho_losses = (router_weights * gate_proj_weights).sum(dim=1)  # [n_exp, intermediate_size]
             ortho_losses_weights = torch.ones_like(ortho_losses)
             # downweight or ignore negative correlations
