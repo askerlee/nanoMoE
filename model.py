@@ -464,7 +464,7 @@ class GPTConfig:
     use_noisy_top_k: bool = False
     aux_loss_weight: float = 0.01 # default setting from Switch Transformer (see top of page 8)
     router_z_loss_weight: float = 0.001 # default setting from ST-MoE (see page 8 eq. 6)
-    router_ortho_loss_weight: float = 0.001    # default weight for orthogonality loss
+    router_ortho_loss_weight: float = 0.01    # default weight for orthogonality loss
     router_ortho_neg_corr_weight: float = 1  # weight for negative correlations in router-ortho loss
     # experts_ortho_loss is very small due to squared cosine similarities.
     # So its weight is set higher to have a meaningful effect.

@@ -85,7 +85,7 @@ use_experts_ortho_loss = False
 use_noisy_top_k = False
 aux_loss_weight = 0.001
 router_z_loss_weight = 0.01
-router_ortho_loss_weight = 0.001
+router_ortho_loss_weight = 0.01
 router_ortho_neg_corr_weight = 1  # weight for negative correlations in router-ortho loss
 # experts_ortho_loss is very small due to squared cosine similarities.
 # So its weight is set higher to have a meaningful effect.
