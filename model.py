@@ -20,6 +20,53 @@ from manager import MANAGER
 from transformers.activations import SiLUActivation
 
 
+# Revised from RevGrad, by removing the grad negation.
+class ScaleGrad(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input_, alpha_, debug=False):
+        ctx.save_for_backward(alpha_, debug)
+        output = input_
+        if debug:
+            print(f"input: {input_.abs().mean().detach().item()}")
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):  # pragma: no cover
+        # saved_tensors returns a tuple of tensors.
+        alpha_, debug = ctx.saved_tensors
+        if ctx.needs_input_grad[0]:
+            grad_output2 = grad_output * alpha_
+            if debug:
+                print(f"grad_output2: {grad_output2.abs().mean().detach().item()}")
+        else:
+            grad_output2 = None
+        return grad_output2, None, None
+
+class GradientScaler(nn.Module):
+    def __init__(self, alpha=1., debug=False, *args, **kwargs):
+        """
+        A gradient scaling layer.
+        This layer has no parameters, and simply scales the gradient in the backward pass.
+        """
+        super().__init__(*args, **kwargs)
+
+        self._alpha = torch.tensor(alpha, requires_grad=False)
+        self._debug = torch.tensor(debug, requires_grad=False)
+
+    def forward(self, input_):
+        _debug = self._debug if hasattr(self, '_debug') else False
+        return ScaleGrad.apply(input_, self._alpha.to(input_.device), _debug)
+
+def gen_gradient_scaler(alpha, debug=False):
+    if alpha == 1:
+        return nn.Identity()
+    if alpha > 0:
+        return GradientScaler(alpha, debug=debug)
+    else:
+        assert alpha == 0
+        # Don't use lambda function here, otherwise the object can't be pickled.
+        return torch.detach
+
 class CausalSelfAttention(nn.Module):
 
     def __init__(self, config):
@@ -331,6 +378,8 @@ class MOELayer(nn.Module):
         # Should always be True, i.e., always compute experts ortho loss for ablation study.
         # We just don't optimize it unless the weight is set > 0 in the config.
         self.use_experts_ortho_loss = config.use_experts_ortho_loss
+        # scale down gradients back to expert weights by 0.2
+        self.grad_scaler = gen_gradient_scaler(0.2) 
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size() # Keep track of original shape
@@ -397,8 +446,10 @@ class MOELayer(nn.Module):
         else:
             # Compute orthogonality loss between router weight vectors and expert gate projection vectors
             router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
-            # Cut off gradients to expert gate projection weights
-            gate_proj_weights = self.experts.gate_proj.detach()  # [n_exp, n_embd, intermediate_size]
+            # Totally cutting off gradients may not be optimal.
+            # Scale down gradients to expert gate projection weights by 0.2  
+            # allows adjusting expert weights slightly, without hurting representation learning too much.
+            gate_proj_weights = self.grad_scaler(self.experts.gate_proj)  # [n_exp, n_embd, intermediate_size]
             ortho_losses = (router_weights * gate_proj_weights).sum(dim=1)  # [n_exp, intermediate_size]
             ortho_losses_weights = torch.ones_like(ortho_losses)
             # downweight or ignore negative correlations
