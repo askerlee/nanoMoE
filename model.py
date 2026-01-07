@@ -639,6 +639,7 @@ class GPT(nn.Module):
                 MANAGER.reset_router_z_loss()
             if self.config.n_exp > 1 and self.config.use_router_ortho_loss:
                 router_ortho_loss = MANAGER.aggregate_router_ortho_loss()
+                breakpoint()
                 loss += self.config.router_ortho_loss_weight * router_ortho_loss
                 MANAGER.reset_router_ortho_loss()
             if self.config.n_exp > 1 and self.config.use_experts_ortho_loss:
