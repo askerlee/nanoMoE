@@ -677,7 +677,8 @@ class GPT(nn.Module):
             x = block(x)
         x = self.transformer.ln_f(x)
         router_ortho_loss = 0
-        losses = { 'aux_loss': 0,
+        losses = { 'ntp_loss': 0,
+                   'aux_loss': 0,
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0, 
@@ -687,6 +688,7 @@ class GPT(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            losses['ntp_loss'] = loss.item()
 
             # add the auxiliary load balancing loss and router z loss to the main loss
             if self.config.n_exp > 1 and self.config.use_aux_loss:

@@ -481,7 +481,7 @@ for epoch in range(math.ceil(num_epochs)):
             
             if wandb_log:
                 wandb.log({
-                    "train/loss_step": lossf,
+                    "train/loss_step": losses['ntp_loss'],
                     "train/grad_norm": grad_normf,
                     "train/aux_loss_step": losses['aux_loss'],
                     "train/router_z_loss_step": losses['router_z_loss'],
