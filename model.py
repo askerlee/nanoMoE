@@ -401,11 +401,6 @@ class MOELayer(nn.Module):
             experts_ortho_loss = self.compute_experts_ortho_loss()
             MANAGER.add_experts_ortho_loss(experts_ortho_loss)
 
-        if self.training and self.use_gate_output_loss:
-            gate_output_loss = self.experts.gate_output_loss
-            self.experts.gate_output_loss = 0  # reset for next step
-            MANAGER.add_gate_output_loss(gate_output_loss)
-
         # Now, flatten the input tensor for the dispatch operation
         x_flat = x.view(B * T, C)
 
@@ -428,6 +423,12 @@ class MOELayer(nn.Module):
 
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
+
+        # Always collect gate output loss after self.experts forward.
+        if self.training and self.use_gate_output_loss:
+            gate_output_loss = self.experts.gate_output_loss
+            self.experts.gate_output_loss = 0  # reset for next step
+            MANAGER.add_gate_output_loss(gate_output_loss)
 
         # --- Combine expert outputs (the "gather" part) ---
         output_flat = torch.zeros_like(x_flat)
