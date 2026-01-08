@@ -51,7 +51,6 @@ def seed_worker(worker_seed):
 # I/O
 out_dir = 'out'
 log_interval = 25
-eval_iters = 200
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'gpt2*'
@@ -186,7 +185,10 @@ for dataset in datasets:
     
     train_dataset = ChunkDataset(train_bin_path, block_size)
     val_dataset = ChunkDataset(val_bin_path, block_size)
-    
+    print(f"Loaded dataset {dataset}:")
+    print(f"  train tokens: {len(train_dataset.data):,}")
+    print(f"  val tokens: {len(val_dataset.data):,}")
+    print()
     train_datasets.append(train_dataset)
     val_datasets.append(val_dataset)
 
@@ -196,6 +198,10 @@ for dataset in datasets:
 num_workers = min(4, os.cpu_count() or 1)
 
 combined_train_dataset = torch.utils.data.ConcatDataset(train_datasets)
+# batch_size = 64
+# block_size = 512
+# Each batch contains 64*512 = 32K tokens.
+# The evaluation dataset contains 4899304+4434606 = 9300K tokens = 284 batches.
 train_loader = torch.utils.data.DataLoader(
     combined_train_dataset,
     batch_size=batch_size,
@@ -214,6 +220,12 @@ val_loader = torch.utils.data.DataLoader(
     pin_memory=True if device_type == 'cuda' else False,
     drop_last=True
 )
+
+eval_iters = len(val_loader)
+print(f"Using {len(combined_train_dataset)} training tokens from datasets: {datasets}")
+print(f"Using {len(combined_val_dataset)} validation tokens from datasets: {datasets}")
+print(f"Train batches per epoch: {len(train_loader)}")
+print(f"Validation batches per eval: {len(val_loader)}")
 
 # Calculate epoch parameters
 iters_per_epoch = len(train_loader)
