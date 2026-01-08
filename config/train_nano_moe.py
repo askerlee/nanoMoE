@@ -13,7 +13,7 @@ wandb_run_name ='gpt2-124M-moe-owt ' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 # model/moe settings
 n_exp = 128
-top_k = 4
+top_k = 3
 use_aux_loss = True
 aux_loss_weight = 0.01
 use_router_z_loss = True
