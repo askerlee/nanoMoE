@@ -692,22 +692,22 @@ class GPT(nn.Module):
             if self.config.n_exp > 1 and self.config.use_aux_loss:
                 aux_loss = MANAGER.aggregate_aux_loss()
                 loss += self.config.aux_loss_weight * aux_loss
-                losses['aux_loss'] = aux_loss.item()
+                losses['aux_loss'] = aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
                 MANAGER.reset_aux_loss()
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
                 router_z_loss = MANAGER.aggregate_router_z_loss()
                 loss += self.config.router_z_loss_weight * router_z_loss
-                losses['router_z_loss'] = router_z_loss.item()
+                losses['router_z_loss'] = router_z_loss.item() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
                 MANAGER.reset_router_z_loss()
             if self.config.n_exp > 1 and self.config.use_router_ortho_loss:
                 router_ortho_loss = MANAGER.aggregate_router_ortho_loss()
-                loss += self.config.router_ortho_loss_weight * router_ortho_loss
-                losses['router_ortho_loss'] = router_ortho_loss.item()
+                loss += self.config.router_ortho_loss_weight * router_ortho_loss 
+                losses['router_ortho_loss'] = router_ortho_loss.item() if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
                 MANAGER.reset_router_ortho_loss()
             if self.config.n_exp > 1 and self.config.use_experts_ortho_loss:
                 experts_ortho_loss = MANAGER.aggregate_experts_ortho_loss()
                 loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
-                losses['experts_ortho_loss'] = experts_ortho_loss.item()
+                losses['experts_ortho_loss'] = experts_ortho_loss.item() if isinstance(experts_ortho_loss, torch.Tensor) else experts_ortho_loss
                 MANAGER.reset_experts_ortho_loss()
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
