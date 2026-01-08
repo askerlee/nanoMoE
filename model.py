@@ -494,6 +494,7 @@ class MOELayer(nn.Module):
             return torch.tensor(0.0, device=self.experts.c_fc.device)
         # compute mean squared value of gate outputs
         loss = (gate_out ** 2).mean()
+        self.experts.gate_out = None  # reset for next forward pass
         return loss
     
 class Block(nn.Module):
