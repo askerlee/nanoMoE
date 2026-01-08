@@ -352,9 +352,11 @@ class Qwen3MLPExperts(nn.Module):
         self.act_fn = SiLUActivation()
         self.fc_bias = None
         self.proj_bias = None
+        self.gate_out = None
 
     def forward(self, x):
         gate_out = torch.bmm(x, self.gate_proj)
+        self.gate_out = gate_out
         fc_out = torch.bmm(x, self.c_fc)
         x = self.act_fn(gate_out) * fc_out
         x = torch.bmm(x, self.c_proj)
@@ -378,6 +380,7 @@ class MOELayer(nn.Module):
         # Should always be True, i.e., always compute experts ortho loss for ablation study.
         # We just don't optimize it unless the weight is set > 0 in the config.
         self.use_experts_ortho_loss = config.use_experts_ortho_loss
+        self.use_gate_output_loss = config.use_gate_output_loss
         # scale down gradients back to expert weights by 0.1 during router orthogonality loss computation.
         self.grad_scaler = gen_gradient_scaler(0.1) 
 
@@ -396,6 +399,10 @@ class MOELayer(nn.Module):
         if self.training and self.use_experts_ortho_loss:
             experts_ortho_loss = self.compute_experts_ortho_loss()
             MANAGER.add_experts_ortho_loss(experts_ortho_loss)
+
+        if self.training and self.use_gate_output_loss:
+            gate_output_loss = self.compute_gate_output_loss()
+            MANAGER.add_gate_output_loss(gate_output_loss)
 
         # Now, flatten the input tensor for the dispatch operation
         x_flat = x.view(B * T, C)
@@ -479,6 +486,14 @@ class MOELayer(nn.Module):
         loss = (offdiag ** 2).mean()
         return loss.to(W.dtype)
 
+    def compute_gate_output_loss(self):
+        if not self.use_qwen3_moe_mlp:
+            return torch.tensor(0.0, device=self.experts.c_fc.device)
+        gate_out = self.experts.gate_out  # [n_exp, exp_capacity, intermediate_size]
+        # compute mean squared value of gate outputs
+        loss = (gate_out ** 2).mean()
+        return loss
+    
 class Block(nn.Module):
 
     def __init__(self, config, use_moe=False):
@@ -512,6 +527,7 @@ class GPTConfig:
     use_router_z_loss: bool = False # apply router z loss (from ST-MoE)
     use_router_ortho_loss: bool = False # apply router orthogonality loss
     use_experts_ortho_loss: bool = True # always compute experts orthogonality loss for ablation study
+    use_gate_output_loss: bool = True # Always compute gate output regularization loss for ablation study
     use_noisy_top_k: bool = False
     aux_loss_weight: float = 0.01 # default setting from Switch Transformer (see top of page 8)
     router_z_loss_weight: float = 0.001 # default setting from ST-MoE (see page 8 eq. 6)
@@ -519,7 +535,8 @@ class GPTConfig:
     router_ortho_neg_corr_weight: float = 1  # weight for negative correlations in router-ortho loss
     # experts_ortho_loss is very small due to squared cosine similarities.
     # So its weight is set higher to have a meaningful effect.
-    experts_ortho_loss_weight: float = 0.01  
+    experts_ortho_loss_weight: float = 0.01
+    gate_output_loss_weight: float = 0.01  # default weight for gate output regularization loss
     train_capacity: float = 1.25  # default setting from ST-MoE (see top of page 6)
     eval_capacity: float = 2.0
     min_capacity: int = 4  # minimum batch size to send to any single expert
@@ -682,6 +699,7 @@ class GPT(nn.Module):
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0, 
+                   'gate_output_loss': 0
                  }
 
         if targets is not None:
@@ -711,6 +729,11 @@ class GPT(nn.Module):
                 loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
                 losses['experts_ortho_loss'] = experts_ortho_loss.item() if isinstance(experts_ortho_loss, torch.Tensor) else experts_ortho_loss
                 MANAGER.reset_experts_ortho_loss()
+            if self.config.n_exp > 1 and self.config.use_gate_output_loss:
+                gate_output_loss = MANAGER.aggregate_gate_output_loss()
+                loss += self.config.gate_output_loss_weight * gate_output_loss
+                losses['gate_output_loss'] = gate_output_loss.item() if isinstance(gate_output_loss, torch.Tensor) else gate_output_loss
+                MANAGER.reset_gate_output_loss()
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim

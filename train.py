@@ -81,6 +81,7 @@ use_aux_loss = False
 use_router_z_loss = False
 use_router_ortho_loss = False
 use_experts_ortho_loss = False
+use_gate_output_loss = False
 use_noisy_top_k = False
 aux_loss_weight = 0.001
 router_z_loss_weight = 0.01
@@ -89,6 +90,7 @@ router_ortho_neg_corr_weight = 1  # weight for negative correlations in router-o
 # experts_ortho_loss is very small due to squared cosine similarities.
 # So its weight is set higher to have a meaningful effect.
 experts_ortho_loss_weight = 0.01  
+gate_output_loss_weight = 0.01
 train_capacity = 1.25
 eval_capacity = 2.0
 min_capacity = 4
@@ -202,6 +204,8 @@ combined_train_dataset = torch.utils.data.ConcatDataset(train_datasets)
 # block_size = 512
 # Each batch contains 64*512 = 32K tokens.
 # The evaluation dataset contains 4899304+4434606 = 9300K tokens = 284 batches.
+# The first dataset, fineweb_10b, contains 4899304 tokens = 153 batches.
+# The second dataset, openwebtext, contains 4434606 tokens = 131 batches.
 train_loader = torch.utils.data.DataLoader(
     combined_train_dataset,
     batch_size=batch_size,
@@ -269,11 +273,13 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   use_aux_loss=use_aux_loss, use_router_z_loss=use_router_z_loss,
                   use_router_ortho_loss=use_router_ortho_loss,
                   use_experts_ortho_loss=use_experts_ortho_loss,
+                  use_gate_output_loss=use_gate_output_loss,
                   use_noisy_top_k=use_noisy_top_k, aux_loss_weight=aux_loss_weight,
                   router_z_loss_weight=router_z_loss_weight, 
                   router_ortho_loss_weight=router_ortho_loss_weight,
                   router_ortho_neg_corr_weight=router_ortho_neg_corr_weight,
                   experts_ortho_loss_weight=experts_ortho_loss_weight,
+                  gate_output_loss_weight=gate_output_loss_weight,
                   train_capacity=train_capacity,
                   eval_capacity=eval_capacity, min_capacity=min_capacity, 
                   stride=stride, moe_start_layer=moe_start_layer,

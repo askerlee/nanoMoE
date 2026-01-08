@@ -9,6 +9,7 @@ class MOEManager:
         self.router_z_loss = []
         self.router_ortho_loss = []
         self.experts_ortho_loss = []
+        self.gate_output_loss = []
         self.ortho_loss_start_frac = ortho_loss_start_frac
 
     def reset_aux_loss(self):
@@ -23,6 +24,9 @@ class MOEManager:
     def reset_experts_ortho_loss(self):
         self.experts_ortho_loss = []
 
+    def reset_gate_output_loss(self):
+        self.gate_output_loss = []
+
     def add_aux_loss(self, loss):
         self.aux_loss.append(loss)
     
@@ -34,6 +38,9 @@ class MOEManager:
 
     def add_experts_ortho_loss(self, loss):
         self.experts_ortho_loss.append(loss)
+
+    def add_gate_output_loss(self, loss):
+        self.gate_output_loss.append(loss)
 
     def aggregate_aux_loss(self):
         return sum(self.aux_loss)
@@ -51,4 +58,8 @@ class MOEManager:
         start_layer = int(len(self.experts_ortho_loss) * self.ortho_loss_start_frac)
         return sum(self.experts_ortho_loss[start_layer:])
     
+    def aggregate_gate_output_loss(self):
+        start_layer = int(len(self.gate_output_loss) * self.ortho_loss_start_frac)
+        return sum(self.gate_output_loss[start_layer:])
+
 MANAGER = MOEManager(ortho_loss_start_frac=0.)

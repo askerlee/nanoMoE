@@ -21,12 +21,14 @@ router_z_loss_weight = 0.0002
 use_router_ortho_loss = True
 # experts_ortho_loss is slow to compute and has negative effect on router_ortho_loss.
 use_experts_ortho_loss = False 
+use_gate_output_loss = True
 router_ortho_loss_weight = 0.01
 router_ortho_neg_corr_weight = 1
 # Experts orthogonality loss as of arXiv:2601.00457.
 # experts_ortho_loss is very small due to squared cosine similarities.
 # So its weight is set higher to have a meaningful effect.
 experts_ortho_loss_weight = 0.01
+gate_output_loss_weight = 0.01
 
 use_noisy_top_k = False
 train_capacity = 1.25
