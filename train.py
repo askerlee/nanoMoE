@@ -523,6 +523,7 @@ for epoch in range(math.ceil(num_epochs)):
                     "train/router_z_loss_step": losses['router_z_loss'],
                     "train/router_ortho_loss_step": losses['router_ortho_loss'],
                     "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
+                    "train/gate_output_loss_step": losses['gate_output_loss'],
                     "lr": lr,
                     "mfu": running_mfu*100,
                     "tok_per_sec": running_tokens_per_sec,
