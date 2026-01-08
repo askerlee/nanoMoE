@@ -353,11 +353,18 @@ class Qwen3MLPExperts(nn.Module):
         self.fc_bias = None
         self.proj_bias = None
         self.gate_output_loss = 0
+        self.use_gate_output_loss = config.use_gate_output_loss
 
     def forward(self, x):
         gate_out = torch.bmm(x, self.gate_proj)
-        # compute mean squared value of gate outputs
-        self.gate_output_loss = (gate_out ** 2).mean()
+        if self.use_gate_output_loss:
+            # Compute mean squared value of gate outputs.
+            # But we don't want gradients to flow back to input features here.
+            # So we detach x before computing this loss. This will incur a little cost
+            # of recomputing the gate outputs, but should be acceptable.
+            gate_out_cutoff = torch.bmm(x.detach(), self.gate_proj)
+            self.gate_output_loss = (gate_out_cutoff ** 2).mean()
+
         fc_out = torch.bmm(x, self.c_fc)
         x = self.act_fn(gate_out) * fc_out
         x = torch.bmm(x, self.c_proj)
