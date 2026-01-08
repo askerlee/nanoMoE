@@ -51,4 +51,4 @@ class MOEManager:
         start_layer = int(len(self.experts_ortho_loss) * self.ortho_loss_start_frac)
         return sum(self.experts_ortho_loss[start_layer:])
     
-MANAGER = MOEManager(ortho_loss_start_frac=0.25)
+MANAGER = MOEManager(ortho_loss_start_frac=0.)

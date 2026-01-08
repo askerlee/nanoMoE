@@ -677,6 +677,11 @@ class GPT(nn.Module):
             x = block(x)
         x = self.transformer.ln_f(x)
         router_ortho_loss = 0
+        losses = { 'aux_loss': 0,
+                   'router_z_loss': 0,
+                   'router_ortho_loss': 0,
+                   'experts_ortho_loss': 0, 
+                 }
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -685,25 +690,31 @@ class GPT(nn.Module):
 
             # add the auxiliary load balancing loss and router z loss to the main loss
             if self.config.n_exp > 1 and self.config.use_aux_loss:
-                loss += self.config.aux_loss_weight * MANAGER.aggregate_aux_loss()
+                aux_loss = MANAGER.aggregate_aux_loss()
+                loss += self.config.aux_loss_weight * aux_loss
+                losses['aux_loss'] = aux_loss.item()
                 MANAGER.reset_aux_loss()
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
-                loss += self.config.router_z_loss_weight * MANAGER.aggregate_router_z_loss()
+                router_z_loss = MANAGER.aggregate_router_z_loss()
+                loss += self.config.router_z_loss_weight * router_z_loss
+                losses['router_z_loss'] = router_z_loss.item()
                 MANAGER.reset_router_z_loss()
             if self.config.n_exp > 1 and self.config.use_router_ortho_loss:
                 router_ortho_loss = MANAGER.aggregate_router_ortho_loss()
                 loss += self.config.router_ortho_loss_weight * router_ortho_loss
+                losses['router_ortho_loss'] = router_ortho_loss.item()
                 MANAGER.reset_router_ortho_loss()
             if self.config.n_exp > 1 and self.config.use_experts_ortho_loss:
                 experts_ortho_loss = MANAGER.aggregate_experts_ortho_loss()
                 loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
+                losses['experts_ortho_loss'] = experts_ortho_loss.item()
                 MANAGER.reset_experts_ortho_loss()
         else:
             # inference-time mini-optimization: only forward the lm_head on the very last position
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss, router_ortho_loss, experts_ortho_loss
+        return logits, loss, losses
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
