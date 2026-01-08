@@ -33,7 +33,7 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.profiler import profile, record_function, ProfilerActivity
 
 from model import GPTConfig, GPT
-from data.tinystories.dataloader import get_dataloader
+from data.tinystories.dataloader import get_dataloader, ChunkDataset
 import numpy as np
 import random
 
@@ -64,7 +64,7 @@ wandb_run_name = 'gpt2-124M-owt' + str(time.time())
 
 # data
 # tinystories is too easy. We revert to openwebtext.
-dataset = 'fineweb_10b' #'tinystories', 'openwebtext', 'fineweb_10b'
+datasets = ['fineweb_10b', 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_10b'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12     # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024   # Training tokens per sample
@@ -174,27 +174,45 @@ device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.aut
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
-# data loading
-data_dir = os.path.join('data', dataset)
+train_datasets = []
+val_datasets = []
+
+for dataset in datasets:
+    # data loading
+    data_dir = os.path.join('data', dataset)
+
+    train_bin_path = os.path.join(data_dir, 'train.bin')
+    val_bin_path = os.path.join(data_dir, 'val.bin')
+    
+    train_dataset = ChunkDataset(train_bin_path, block_size)
+    val_dataset = ChunkDataset(val_bin_path, block_size)
+    
+    train_datasets.append(train_dataset)
+    val_datasets.append(val_dataset)
+
+# Combine multiple datasets, then create DataLoaders
+# ConcatDataset concatenates datasets sequentially, then shuffle=True mixes samples
+# This allows batches to contain samples from different base datasets
 num_workers = min(4, os.cpu_count() or 1)
 
-# Initialize DataLoaders
-train_loader = get_dataloader(
-    data_dir=data_dir,
-    split='train',
+combined_train_dataset = torch.utils.data.ConcatDataset(train_datasets)
+train_loader = torch.utils.data.DataLoader(
+    combined_train_dataset,
     batch_size=batch_size,
-    block_size=block_size,
+    shuffle=True,  # This shuffles across ALL datasets, mixing samples in batches
     num_workers=num_workers,
-    shuffle=True
+    pin_memory=True if device_type == 'cuda' else False,
+    drop_last=True
 )
 
-val_loader = get_dataloader(
-    data_dir=data_dir,
-    split='validation',
+combined_val_dataset = torch.utils.data.ConcatDataset(val_datasets)
+val_loader = torch.utils.data.DataLoader(
+    combined_val_dataset,
     batch_size=batch_size,
-    block_size=block_size,
+    shuffle=False,
     num_workers=0,  # Keep validation single-threaded for deterministic results
-    shuffle=False
+    pin_memory=True if device_type == 'cuda' else False,
+    drop_last=True
 )
 
 # Calculate epoch parameters
