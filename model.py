@@ -378,8 +378,8 @@ class MOELayer(nn.Module):
         # Should always be True, i.e., always compute experts ortho loss for ablation study.
         # We just don't optimize it unless the weight is set > 0 in the config.
         self.use_experts_ortho_loss = config.use_experts_ortho_loss
-        # scale down gradients back to expert weights by 0.2
-        self.grad_scaler = gen_gradient_scaler(0.2) 
+        # scale down gradients back to expert weights by 0.1 during router orthogonality loss computation.
+        self.grad_scaler = gen_gradient_scaler(0.1) 
 
     def forward(self, x: torch.Tensor):
         B, T, C = x.size() # Keep track of original shape
