@@ -403,6 +403,7 @@ class MOELayer(nn.Module):
 
         if self.training and self.use_gate_output_loss:
             gate_output_loss = self.experts.gate_output_loss
+            self.experts.gate_output_loss = 0  # reset for next step
             MANAGER.add_gate_output_loss(gate_output_loss)
 
         # Now, flatten the input tensor for the dispatch operation
