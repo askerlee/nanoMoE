@@ -426,9 +426,8 @@ class MOELayer(nn.Module):
 
         # Always collect gate output loss after self.experts forward.
         if self.training and self.use_gate_output_loss:
-            gate_output_loss = self.experts.gate_output_loss
+            MANAGER.add_gate_output_loss(self.experts.gate_output_loss)
             self.experts.gate_output_loss = 0  # reset for next step
-            MANAGER.add_gate_output_loss(gate_output_loss)
 
         # --- Combine expert outputs (the "gather" part) ---
         output_flat = torch.zeros_like(x_flat)
