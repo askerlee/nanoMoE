@@ -94,6 +94,7 @@ train_capacity = 1.25
 eval_capacity = 2.0
 min_capacity = 4
 stride = 2
+moe_start_layer = 2
 use_switch_tfm_init = False
 switch_tfm_init_scale = 1.0  # recommended 0.1 for stability (pg.10, https://arxiv.org/abs/2101.03961)
 router_use_full_prec = False
@@ -244,7 +245,8 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   router_ortho_neg_corr_weight=router_ortho_neg_corr_weight,
                   experts_ortho_loss_weight=experts_ortho_loss_weight,
                   train_capacity=train_capacity,
-                  eval_capacity=eval_capacity, min_capacity=min_capacity, stride=stride,
+                  eval_capacity=eval_capacity, min_capacity=min_capacity, 
+                  stride=stride, moe_start_layer=moe_start_layer,
                   use_switch_tfm_init=use_switch_tfm_init, switch_tfm_init_scale=switch_tfm_init_scale,
                   router_use_full_prec=router_use_full_prec,
                   use_qwen3_moe_mlp=use_qwen3_moe_mlp) # start with model_args from command line

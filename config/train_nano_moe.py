@@ -13,7 +13,7 @@ wandb_run_name ='gpt2-124M-moe-owt ' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 # model/moe settings
 n_exp = 128
-top_k = 3
+top_k = 4
 use_aux_loss = True
 aux_loss_weight = 0.01
 use_router_z_loss = True
@@ -31,6 +31,7 @@ use_noisy_top_k = False
 train_capacity = 1.25
 eval_capacity = 2.0
 stride =1
+moe_start_layer = 2 # The first two layers are dense layers.
 use_switch_tfm_init = True
 router_use_full_prec = True
 use_qwen3_moe_mlp = True

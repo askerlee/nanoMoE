@@ -523,7 +523,8 @@ class GPTConfig:
     train_capacity: float = 1.25  # default setting from ST-MoE (see top of page 6)
     eval_capacity: float = 2.0
     min_capacity: int = 4  # minimum batch size to send to any single expert
-    stride: int = 2 # one in every stride layers are converted to an MoE
+    stride: int = 1 # one in every stride layers are converted to an MoE
+    moe_start_layer: int = 0 # layer index to start using MoE layers, if n_exp > 1
     use_switch_tfm_init: bool = False  # use weight init scheme from Switch Transformer
     switch_tfm_init_scale: float = 1.0
     router_use_full_prec: bool = False  # use float32 precision in the router
@@ -546,7 +547,7 @@ class GPT(nn.Module):
             for i in range(config.n_layer):
                 # TODO: how to implement this?
                 # should we change below to i + 1 ?
-                use_moe = ((i + 1) % config.stride) == 0
+                use_moe = (i >= config.moe_start_layer) and ((i + 1) % config.stride == 0)
                 blocks.append(Block(config, use_moe=use_moe))
             blocks = nn.ModuleList(blocks)
 
