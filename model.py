@@ -490,6 +490,8 @@ class MOELayer(nn.Module):
         if not self.use_qwen3_moe_mlp:
             return torch.tensor(0.0, device=self.experts.c_fc.device)
         gate_out = self.experts.gate_out  # [n_exp, exp_capacity, intermediate_size]
+        if gate_out is None:
+            return torch.tensor(0.0, device=self.experts.c_fc.device)
         # compute mean squared value of gate outputs
         loss = (gate_out ** 2).mean()
         return loss
