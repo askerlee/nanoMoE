@@ -352,16 +352,17 @@ class Qwen3MLPExperts(nn.Module):
         self.act_fn = SiLUActivation()
         self.fc_bias = None
         self.proj_bias = None
-        self.gate_out = None
+        self.gate_output_loss = 0
 
     def forward(self, x):
         gate_out = torch.bmm(x, self.gate_proj)
-        self.gate_out = gate_out
+        # compute mean squared value of gate outputs
+        self.gate_output_loss = (gate_out ** 2).mean()
         fc_out = torch.bmm(x, self.c_fc)
         x = self.act_fn(gate_out) * fc_out
         x = torch.bmm(x, self.c_proj)
         return x
-
+    
 class MOELayer(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -401,7 +402,7 @@ class MOELayer(nn.Module):
             MANAGER.add_experts_ortho_loss(experts_ortho_loss)
 
         if self.training and self.use_gate_output_loss:
-            gate_output_loss = self.compute_gate_output_loss()
+            gate_output_loss = self.experts.gate_output_loss
             MANAGER.add_gate_output_loss(gate_output_loss)
 
         # Now, flatten the input tensor for the dispatch operation
@@ -486,17 +487,6 @@ class MOELayer(nn.Module):
         loss = (offdiag ** 2).mean()
         return loss.to(W.dtype)
 
-    def compute_gate_output_loss(self):
-        if not self.use_qwen3_moe_mlp:
-            return torch.tensor(0.0, device=self.experts.c_fc.device)
-        gate_out = self.experts.gate_out  # [n_exp, exp_capacity, intermediate_size]
-        if gate_out is None:
-            return torch.tensor(0.0, device=self.experts.c_fc.device)
-        # compute mean squared value of gate outputs
-        loss = (gate_out ** 2).mean()
-        self.experts.gate_out = None  # reset for next forward pass
-        return loss
-    
 class Block(nn.Module):
 
     def __init__(self, config, use_moe=False):
