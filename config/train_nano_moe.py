@@ -15,11 +15,12 @@ wandb_run_name ='gpt2-124M-moe-owt ' + time.strftime('%Y-%m-%d %H:%M:%S')
 n_exp = 128
 top_k = 4
 use_aux_loss = True
-aux_loss_weight = 0.01
+aux_loss_weight = 0.002
 use_router_z_loss = True
-router_z_loss_weight = 0.001
+router_z_loss_weight = 0.0002
 use_router_ortho_loss = True
-use_experts_ortho_loss = True
+# experts_ortho_loss is slow to compute and has negative effect on router_ortho_loss.
+use_experts_ortho_loss = False 
 router_ortho_loss_weight = 0.01
 router_ortho_neg_corr_weight = 1
 # Experts orthogonality loss as of arXiv:2601.00457.
