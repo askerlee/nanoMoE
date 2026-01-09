@@ -362,7 +362,9 @@ class Qwen3MLPExperts(nn.Module):
             # But we don't want gradients to flow back to input features here.
             # So we detach x before computing this loss. This will incur a little cost
             # of recomputing the gate outputs, but should be acceptable.
-            gate_out_cutoff = torch.bmm(x.detach(), self.gate_proj)
+            # x: [n_exp, capacity, n_embd], gate_proj: [n_exp, n_embd, intermediate_size]
+            # gate_out_cutoff: [n_exp, capacity, intermediate_size]
+            gate_out_cutoff = torch.bmm(x.detach(), self.gate_proj.mean(dim=-1, keepdim=True))
             self.gate_output_loss = (gate_out_cutoff ** 2).mean()
 
         fc_out = torch.bmm(x, self.c_fc)
@@ -393,8 +395,8 @@ class MOELayer(nn.Module):
         self.grad_scaler = gen_gradient_scaler(0.1) 
 
     def forward(self, x: torch.Tensor):
+        # x: [64, 512, 512]
         B, T, C = x.size() # Keep track of original shape
-
         # --- Get routing information ---
         # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
         # and return routing info shaped for a flattened list of tokens.
@@ -466,7 +468,7 @@ class MOELayer(nn.Module):
             # Scale down gradients to expert gate projection weights by 0.2  
             # allows adjusting expert weights slightly, without hurting representation learning too much.
             gate_proj_weights = self.grad_scaler(self.experts.gate_proj)  # [n_exp, n_embd, intermediate_size]
-            ortho_losses = (router_weights * gate_proj_weights).sum(dim=1)  # [n_exp, intermediate_size]
+            ortho_losses = (router_weights * gate_proj_weights.mean(dim=-1, keepdim=True)).sum(dim=1)  # [n_exp, intermediate_size]
             ortho_losses_weights = torch.ones_like(ortho_losses)
             # downweight or ignore negative correlations
             ortho_losses_weights[ortho_losses < 0] = self.router_ortho_neg_corr_weight       
