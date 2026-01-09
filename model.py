@@ -474,7 +474,8 @@ class MOELayer(nn.Module):
             ortho_losses_weights[ortho_losses < 0] = self.router_ortho_neg_corr_weight       
             # Square the dot products to penalize both positive and negative correlations
             ortho_losses = ortho_losses ** 2
-            ortho_loss = (ortho_losses * ortho_losses_weights).mean()
+            # Change mean to sum, otherwise the loss is too small to have effect.
+            ortho_loss = (ortho_losses * ortho_losses_weights).sum()
             return ortho_loss
 
     # Compute orthogonality loss between expert weight matrices.
