@@ -21,7 +21,8 @@ router_z_loss_weight = 0.0002
 use_router_ortho_loss = True
 # experts_ortho_loss is slow to compute and has negative effect on router_ortho_loss.
 use_experts_ortho_loss = False 
-use_gate_output_loss = True
+# gate_output_loss always makes things slightly worse in our experiments. So turn it off by default.
+use_gate_output_loss = False
 # After changing to mean, the router orthogonality loss is tiny (<0.05), 
 # so maybe we should increase its weight.
 router_ortho_loss_weight = 0.01

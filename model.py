@@ -468,14 +468,18 @@ class MOELayer(nn.Module):
             # Totally cutting off gradients may not be optimal.
             # Scale down gradients to expert gate projection weights by 0.2  
             # allows adjusting expert weights slightly, without hurting representation learning too much.
-            gate_proj_weights = self.grad_scaler(self.experts.gate_proj)  # [n_exp, n_embd, intermediate_size]
-            ortho_losses = (router_weights * gate_proj_weights).sum(dim=1)  # [n_exp, intermediate_size]
+            # gate_proj_weights: [n_exp, n_embd, intermediate_size]
+            gate_proj_weights = self.grad_scaler(self.experts.gate_proj)  
+            # ortho_losses: [n_exp, intermediate_size]
+            ortho_losses = (router_weights * gate_proj_weights).sum(dim=1)
             ortho_losses_weights = torch.ones_like(ortho_losses)
             # downweight or ignore negative correlations
             ortho_losses_weights[ortho_losses < 0] = self.router_ortho_neg_corr_weight       
             # Square the dot products to penalize both positive and negative correlations
             ortho_losses = ortho_losses ** 2
             # Change mean to sum, otherwise the loss is too small to have effect.
+            # sum() is n_exp * intermediate_size times larger than mean()
+            # n_exp = 128, intermediate_size = 2048, so the loss is 262144 times larger!!
             ortho_loss = (ortho_losses * ortho_losses_weights).sum()
             return ortho_loss
 
