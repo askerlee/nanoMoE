@@ -28,7 +28,7 @@ router_ortho_neg_corr_weight = 1
 # experts_ortho_loss is very small due to squared cosine similarities.
 # So its weight is set higher to have a meaningful effect.
 experts_ortho_loss_weight = 0.01
-gate_output_loss_weight = 0.0001
+gate_output_loss_weight = 0.1
 
 use_noisy_top_k = False
 train_capacity = 1.25
