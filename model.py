@@ -354,6 +354,7 @@ class Qwen3MLPExperts(nn.Module):
         self.proj_bias = None
         self.gate_output_loss = 0
         self.use_gate_output_loss = config.use_gate_output_loss
+        self.grad_scaler = gen_gradient_scaler(0.1)
 
     def forward(self, x):
         gate_out = torch.bmm(x, self.gate_proj)
@@ -364,7 +365,7 @@ class Qwen3MLPExperts(nn.Module):
             # of recomputing the gate outputs, but should be acceptable.
             # x: [n_exp, capacity, n_embd], gate_proj: [n_exp, n_embd, intermediate_size]
             # gate_out_cutoff: [n_exp, capacity, intermediate_size]
-            gate_out_cutoff = torch.bmm(x.detach(), self.gate_proj.mean(dim=-1, keepdim=True))
+            gate_out_cutoff = torch.bmm(self.grad_scaler(x), self.gate_proj)
             self.gate_output_loss = (gate_out_cutoff ** 2).mean()
 
         fc_out = torch.bmm(x, self.c_fc)
