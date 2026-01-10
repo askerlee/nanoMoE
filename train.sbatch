@@ -7,4 +7,4 @@
 #SBATCH -o slurm-%j.out
 #SBATCH -e slurm-%j.err
 
-python train.py config/train_nano_moe.py "$@"
+python train.py config/train_nano_moe.py --ckpt_prefix="$SLURM_JOB_ID" --always_save_checkpoint=False "$@"

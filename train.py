@@ -53,6 +53,7 @@ out_dir = 'out'
 log_interval = 25
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
+ckpt_prefix = "nanomoe"
 init_from = 'scratch' # 'scratch' or 'gpt2*'
 seed = 1337
 
@@ -451,7 +452,7 @@ for epoch in range(math.ceil(num_epochs)):
                     'config': config,
                 }
                 print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+                torch.save(checkpoint, os.path.join(out_dir, f'{ckpt_prefix}-ckpt.pt'))
         if eval_only and epoch == 0 and batch_idx == 0:
             # Run one evaluation then exit
             val_loss = estimate_loss()
