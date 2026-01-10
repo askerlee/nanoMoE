@@ -52,7 +52,7 @@ def seed_worker(worker_seed):
 out_dir = 'out'
 log_interval = 25
 eval_only = False # if True, script exits right after the first eval
-enable_save_checkpoint = True # if False, never save checkpoints
+save_ckpt_every_n_evals = 10 # if -1, never save checkpoints
 # if True, always save a checkpoint after each eval, no matter whether the val loss is optimal.
 always_save_checkpoint = True 
 ckpt_prefix = "nanomoe"
@@ -411,6 +411,8 @@ if use_profiler and master_process:
     profiler.start()
 
 global_iter = 0
+eval_count = 0
+
 for epoch in range(math.ceil(num_epochs)):
     if master_process:
         print(f"\n=== Epoch {epoch + 1}/{num_epochs} ===")
@@ -436,6 +438,7 @@ for epoch in range(math.ceil(num_epochs)):
 
         # evaluate the loss on train/val sets and write checkpoints
         if global_iter > 0 and global_iter % eval_every_n_iters == 0 and master_process:
+            eval_count += 1
             val_loss = estimate_loss()
             print(f"epoch {epoch + 1}, step {global_iter}: val loss {val_loss:.4f}")
             if wandb_log:
@@ -444,8 +447,9 @@ for epoch in range(math.ceil(num_epochs)):
                     "lr": lr,
                     "mfu": running_mfu*100, # convert to percentage
                     "tokens_seen": global_iter * batch_size * block_size,
+                    "eval_count": eval_count,
                 }, step=global_iter)
-            if enable_save_checkpoint and (val_loss < best_val_loss or always_save_checkpoint):
+            if save_ckpt_every_n_evals != -1 and (val_loss < best_val_loss or always_save_checkpoint) and (eval_count % save_ckpt_every_n_evals == 0):
                 best_val_loss = val_loss
                 checkpoint = {
                     'model': raw_model.state_dict(),
@@ -454,7 +458,8 @@ for epoch in range(math.ceil(num_epochs)):
                     'config': config,
                 }
                 print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, f'{ckpt_prefix}-ckpt.pt'))
+                torch.save(checkpoint, os.path.join(out_dir, f'{ckpt_prefix}-{eval_count}.pt'))
+                
         if eval_only and epoch == 0 and batch_idx == 0:
             # Run one evaluation then exit
             val_loss = estimate_loss()
