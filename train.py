@@ -52,7 +52,9 @@ def seed_worker(worker_seed):
 out_dir = 'out'
 log_interval = 25
 eval_only = False # if True, script exits right after the first eval
-always_save_checkpoint = True # if True, always save a checkpoint after each eval
+enable_save_checkpoint = True # if False, never save checkpoints
+# if True, always save a checkpoint after each eval, no matter whether the val loss is optimal.
+always_save_checkpoint = True 
 ckpt_prefix = "nanomoe"
 init_from = 'scratch' # 'scratch' or 'gpt2*'
 seed = 1337
@@ -443,7 +445,7 @@ for epoch in range(math.ceil(num_epochs)):
                     "mfu": running_mfu*100, # convert to percentage
                     "tokens_seen": global_iter * batch_size * block_size,
                 }, step=global_iter)
-            if val_loss < best_val_loss or always_save_checkpoint:
+            if enable_save_checkpoint and (val_loss < best_val_loss or always_save_checkpoint):
                 best_val_loss = val_loss
                 checkpoint = {
                     'model': raw_model.state_dict(),
