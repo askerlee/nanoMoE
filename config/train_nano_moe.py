@@ -13,11 +13,11 @@ wandb_run_name ='gpt2-124M-moe-owt ' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 # model/moe settings
 n_exp = 128
-top_k = 4
+top_k = 2
 use_aux_loss = True
-aux_loss_weight = 0.01
+aux_loss_weight = 0.002
 use_router_z_loss = True
-router_z_loss_weight = 0.001
+router_z_loss_weight = 0.0002
 use_router_ortho_loss = True
 # experts_ortho_loss is slow to compute and has negative effect on router_ortho_loss.
 use_experts_ortho_loss = False 
@@ -41,11 +41,11 @@ router_use_full_prec = True
 use_qwen3_moe_mlp = True
 
 # use smaller GPT model
-n_layer = 6
+n_layer = 8
 # The first two layers are dense layers.
 moe_start_layer = 2 
 # Since layer 2, all mlps are MoEs.
-stride =1
+stride = 1
 n_head = 8
 n_embd = 512
 
