@@ -360,13 +360,22 @@ class Qwen3MLPExperts(nn.Module):
         gate_out = torch.bmm(x, self.gate_proj)
         if self.use_gate_output_loss:
             # Compute mean squared value of gate outputs.
-            # But we don't want gradients to flow back to input features here.
-            # So we detach x before computing this loss. This will incur a little cost
-            # of recomputing the gate outputs, but should be acceptable.
+            # But we don't want large gradients to flow back to input features here.
+            # So we scale down the bp stage of x with a grad scaler.
             # x: [n_exp, capacity, n_embd], gate_proj: [n_exp, n_embd, intermediate_size]
             # gate_out_cutoff: [n_exp, capacity, intermediate_size]
-            gate_out_cutoff = torch.bmm(self.grad_scaler(x), self.gate_proj)
-            self.gate_output_loss = (gate_out_cutoff ** 2).mean()
+            # capacity: number of tokens sent to each expert.
+            # NOTE: If some of x are padded zeros, the gate output losses of those elements would be 0.
+            # The mean loss would be slightly smaller. So we should filter out those 
+            # padded elements when computing the mean.
+            gate_out_gs = torch.bmm(self.grad_scaler(x), self.gate_proj)
+            gate_output_losses = (gate_out_gs ** 2).mean(dim=-1) # [n_exp, capacity]
+            # Filter out zero elements.
+            nonzero_mask = gate_output_losses > 0
+            if nonzero_mask.sum() > 0:
+                self.gate_output_loss = gate_output_losses[nonzero_mask].mean()
+            else:
+                self.gate_output_loss = torch.tensor(0.0, device=x.device)
 
         fc_out = torch.bmm(x, self.c_fc)
         x = self.act_fn(gate_out) * fc_out
@@ -434,7 +443,7 @@ class MOELayer(nn.Module):
         # --- Run experts ---
         expert_outputs = self.experts(expert_inputs) # [n_exp, exp_capacity, C]
 
-        # Always collect gate output loss after self.experts forward.
+        # Only collect gate output loss after self.experts forward.
         if self.training and self.use_gate_output_loss:
             MANAGER.add_gate_output_loss(self.experts.gate_output_loss)
             self.experts.gate_output_loss = 0  # reset for next step

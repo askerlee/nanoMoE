@@ -36,14 +36,16 @@ gate_output_loss_weight = 0.0001
 use_noisy_top_k = False
 train_capacity = 1.25
 eval_capacity = 2.0
-stride =1
-moe_start_layer = 2 # The first two layers are dense layers.
 use_switch_tfm_init = True
 router_use_full_prec = True
 use_qwen3_moe_mlp = True
 
 # use smaller GPT model
-n_layer = 8
+n_layer = 6
+# The first two layers are dense layers.
+moe_start_layer = 2 
+# Since layer 2, all mlps are MoEs.
+stride =1
 n_head = 8
 n_embd = 512
 
