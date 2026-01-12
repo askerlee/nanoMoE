@@ -11,11 +11,17 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from manager import MANAGER
+try:
+    from .manager import MANAGER
+except ImportError:
+    from manager import MANAGER
 from transformers.activations import SiLUActivation
 from transformers import GenerationMixin, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from configuration_nanomoe_gpt import GPTConfig
+try:
+    from .configuration_nanomoe_gpt import GPTConfig
+except ImportError:
+    from configuration_nanomoe_gpt import GPTConfig
 
 
 # Revised from RevGrad, by removing the grad negation.

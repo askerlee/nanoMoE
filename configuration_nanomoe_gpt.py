@@ -44,6 +44,13 @@ class GPTConfig(PretrainedConfig):
         use_qwen3_moe_mlp: bool = False,  # use Qwen3-style MoE MLPs
         **kwargs,
     ):
+        # Set auto_map for trust_remote_code loading before calling super().__init__
+        if "auto_map" not in kwargs:
+            kwargs["auto_map"] = {
+                "AutoConfig": "configuration_nanomoe_gpt.GPTConfig",
+                "AutoModelForCausalLM": "modeling_nanomoe_gpt.GPT"
+            }
+        
         super().__init__(**kwargs)
         
         self.block_size = block_size

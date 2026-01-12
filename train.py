@@ -31,6 +31,7 @@ torch._dynamo.config.suppress_errors = True
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 from torch.profiler import profile, record_function, ProfilerActivity
+from transformers import GPT2TokenizerFast
 
 from modeling_nanomoe_gpt import GPTConfig, GPT
 from data.tinystories.dataloader import get_dataloader, ChunkDataset
@@ -456,6 +457,11 @@ for epoch in range(math.ceil(num_epochs)):
                 ckpt_dir = os.path.join(out_dir, f'{ckpt_prefix}-{eval_count}')
                 print(f"saving checkpoint to {ckpt_dir}")
                 raw_model.save_pretrained(ckpt_dir)
+                
+                # Save tokenizer files
+                tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
+                tokenizer.model_max_length = block_size
+                tokenizer.save_pretrained(ckpt_dir)
                 
                 # Copy necessary files for trust_remote_code loading
                 import shutil
