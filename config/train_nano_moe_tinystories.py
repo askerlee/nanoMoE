@@ -11,7 +11,7 @@ wandb_run_name ='tinystories-moe' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 # model/moe settings
 n_exp = 32
-top_k = 4
+moe_top_k = 4
 use_aux_loss = True
 aux_loss_weight = 0.01
 use_router_z_loss = True

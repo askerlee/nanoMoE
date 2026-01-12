@@ -13,7 +13,7 @@ wandb_run_name ='gpt2-124M-moe-owt ' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 # model/moe settings
 n_exp = 128
-top_k = 2
+moe_top_k = 2
 # aux loss is most useful for load balancing.
 use_aux_loss = True
 aux_loss_weight = 0.01
@@ -46,7 +46,7 @@ router_use_full_prec = True
 use_qwen3_moe_mlp = True
 
 # use smaller GPT model
-n_layer = 8
+n_layer = 4
 # The first two layers are dense layers.
 moe_start_layer = 2 
 # Since layer 2, all mlps are MoEs.

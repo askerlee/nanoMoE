@@ -52,7 +52,7 @@ def seed_worker(worker_seed):
 out_dir = 'out'
 log_interval = 25
 eval_only = False # if True, script exits right after the first eval
-save_ckpt_every_n_evals = 10 # if -1, never save checkpoints
+save_ckpt_every_n_evals = 1 # if -1, never save checkpoints
 # if True, always save a checkpoint after each eval, no matter whether the val loss is optimal.
 always_save_checkpoint = True 
 ckpt_prefix = "nanomoe"
@@ -79,7 +79,7 @@ bias = False # do we use bias inside LayerNorm and Linear layers?
 
 # moe
 n_exp = 1 # if n_exp = 1 we just use regular MLP layers
-top_k = 2
+moe_top_k = 2
 use_aux_loss = False
 use_router_z_loss = False
 use_router_ortho_loss = False
@@ -272,7 +272,7 @@ if os.path.exists(meta_path):
 
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  bias=bias, vocab_size=None, n_exp=n_exp, top_k=top_k,
+                  bias=bias, vocab_size=None, n_exp=n_exp, moe_top_k=moe_top_k,
                   use_aux_loss=use_aux_loss, use_router_z_loss=use_router_z_loss,
                   use_router_ortho_loss=use_router_ortho_loss,
                   use_experts_ortho_loss=use_experts_ortho_loss,
@@ -353,7 +353,7 @@ def estimate_loss():
             X, Y = X.to(device), Y.to(device)
             
         with ctx:
-            _, loss, losses = model(X, Y)
+            _, loss, losses = model(input_ids=X, labels=Y, return_dict=False)
         val_losses[k] = loss.item()
     
     model.train()
@@ -451,14 +451,11 @@ for epoch in range(math.ceil(num_epochs)):
                 }, step=global_iter)
             if save_ckpt_every_n_evals != -1 and (val_loss < best_val_loss or always_save_checkpoint) and (eval_count % save_ckpt_every_n_evals == 0):
                 best_val_loss = val_loss
-                checkpoint = {
-                    'model': raw_model.state_dict(),
-                    'model_args': model_args,
-                    'best_val_loss': best_val_loss,
-                    'config': config,
-                }
-                print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, f'{ckpt_prefix}-{eval_count}.pt'))
+                
+                # Save model using HuggingFace format
+                ckpt_dir = os.path.join(out_dir, f'{ckpt_prefix}-{eval_count}')
+                print(f"saving checkpoint to {ckpt_dir}")
+                raw_model.save_pretrained(ckpt_dir)
                 
         if eval_only and epoch == 0 and batch_idx == 0:
             # Run one evaluation then exit
@@ -477,7 +474,7 @@ for epoch in range(math.ceil(num_epochs)):
         with record_function("forward_backward"):
             with ctx:
                 with record_function("forward"):
-                    logits, loss, losses = model(X, Y)
+                    logits, loss, losses = model(input_ids=X, labels=Y, return_dict=False)
                     loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
                     
             # backward pass, with gradient scaling if training in fp16

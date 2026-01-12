@@ -18,6 +18,8 @@ from torch.nn import functional as F
 
 from manager import MANAGER
 from transformers.activations import SiLUActivation
+from transformers import GenerationMixin, PretrainedConfig, PreTrainedModel
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
 # Revised from RevGrad, by removing the grad negation.
@@ -110,7 +112,7 @@ class Router(nn.Module):
         super().__init__()
 
         # router settings
-        self.top_k = config.top_k
+        self.top_k = config.moe_top_k
         self.n_exp = config.n_exp
         assert self.top_k >= 1 and self.top_k <= config.n_exp
         self.use_noisy_top_k = config.use_noisy_top_k
@@ -394,7 +396,7 @@ class MOELayer(nn.Module):
             self.use_qwen3_moe_mlp = False
 
         self.n_exp = config.n_exp
-        self.top_k = config.top_k
+        self.top_k = config.moe_top_k
         self.use_router_ortho_loss = config.use_router_ortho_loss
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
         # Should always be True, i.e., always compute experts ortho loss for ablation study.
@@ -529,49 +531,88 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
-@dataclass
-class GPTConfig:
-    block_size: int = 1024
-    vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-    n_layer: int = 12
-    n_head: int = 12
-    n_embd: int = 768
-    bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+class GPTConfig(PretrainedConfig):
+    model_type = "nanomoe_gpt"
+    
+    def __init__(
+        self,
+        block_size: int = 1024,
+        vocab_size: int = 50304,  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+        n_layer: int = 12,
+        n_head: int = 12,
+        n_embd: int = 768,
+        bias: bool = True,  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+        # MoE-related configs
+        n_exp: int = 1,  # if n_exp = 1 we just use regular MLP layers
+        moe_top_k: int = 2,  # renamed from top_k to avoid conflict with generation top_k
+        use_aux_loss: bool = False,  # apply auxiliary loss (from Switch Transformer) in router
+        use_router_z_loss: bool = False,  # apply router z loss (from ST-MoE)
+        use_router_ortho_loss: bool = False,  # apply router orthogonality loss
+        use_experts_ortho_loss: bool = True,  # always compute experts orthogonality loss for ablation study
+        use_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
+        use_noisy_top_k: bool = False,
+        aux_loss_weight: float = 0.01,  # default setting from Switch Transformer (see top of page 8)
+        router_z_loss_weight: float = 0.001,  # default setting from ST-MoE (see page 8 eq. 6)
+        router_ortho_loss_weight: float = 0.01,  # default weight for orthogonality loss
+        router_ortho_neg_corr_weight: float = 1,  # weight for negative correlations in router-ortho loss
+        # experts_ortho_loss is very small due to squared cosine similarities.
+        # So its weight is set higher to have a meaningful effect.
+        experts_ortho_loss_weight: float = 0.01,
+        gate_output_loss_weight: float = 0.01,  # default weight for gate output regularization loss
+        train_capacity: float = 1.25,  # default setting from ST-MoE (see top of page 6)
+        eval_capacity: float = 2.0,
+        min_capacity: int = 4,  # minimum batch size to send to any single expert
+        stride: int = 1,  # one in every stride layers are converted to an MoE
+        moe_start_layer: int = 0,  # layer index to start using MoE layers, if n_exp > 1
+        use_switch_tfm_init: bool = False,  # use weight init scheme from Switch Transformer
+        switch_tfm_init_scale: float = 1.0,
+        router_use_full_prec: bool = False,  # use float32 precision in the router
+        use_qwen3_moe_mlp: bool = False,  # use Qwen3-style MoE MLPs
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        
+        self.block_size = block_size
+        self.vocab_size = vocab_size
+        self.n_layer = n_layer
+        self.n_head = n_head
+        self.n_embd = n_embd
+        self.bias = bias
+        self.n_exp = n_exp
+        self.moe_top_k = moe_top_k  # Store with moe_ prefix to avoid HF generation conflict
+        self.use_aux_loss = use_aux_loss
+        self.use_router_z_loss = use_router_z_loss
+        self.use_router_ortho_loss = use_router_ortho_loss
+        self.use_experts_ortho_loss = use_experts_ortho_loss
+        self.use_gate_output_loss = use_gate_output_loss
+        self.use_noisy_top_k = use_noisy_top_k
+        self.aux_loss_weight = aux_loss_weight
+        self.router_z_loss_weight = router_z_loss_weight
+        self.router_ortho_loss_weight = router_ortho_loss_weight
+        self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
+        self.experts_ortho_loss_weight = experts_ortho_loss_weight
+        self.gate_output_loss_weight = gate_output_loss_weight
+        self.train_capacity = train_capacity
+        self.eval_capacity = eval_capacity
+        self.min_capacity = min_capacity
+        self.stride = stride
+        self.moe_start_layer = moe_start_layer
+        self.use_switch_tfm_init = use_switch_tfm_init
+        self.switch_tfm_init_scale = switch_tfm_init_scale
+        self.router_use_full_prec = router_use_full_prec
+        self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
 
-    # MoE-related configs 
-    n_exp: int = 1 # if n_exp = 1 we just use regular MLP layers
-    top_k: int = 2
-    use_aux_loss: bool = False # apply auxiliary loss (from Switch Transformer) in router
-    use_router_z_loss: bool = False # apply router z loss (from ST-MoE)
-    use_router_ortho_loss: bool = False # apply router orthogonality loss
-    use_experts_ortho_loss: bool = True # always compute experts orthogonality loss for ablation study
-    use_gate_output_loss: bool = True # Always compute gate output regularization loss for ablation study
-    use_noisy_top_k: bool = False
-    aux_loss_weight: float = 0.01 # default setting from Switch Transformer (see top of page 8)
-    router_z_loss_weight: float = 0.001 # default setting from ST-MoE (see page 8 eq. 6)
-    router_ortho_loss_weight: float = 0.01    # default weight for orthogonality loss
-    router_ortho_neg_corr_weight: float = 1  # weight for negative correlations in router-ortho loss
-    # experts_ortho_loss is very small due to squared cosine similarities.
-    # So its weight is set higher to have a meaningful effect.
-    experts_ortho_loss_weight: float = 0.01
-    gate_output_loss_weight: float = 0.01  # default weight for gate output regularization loss
-    train_capacity: float = 1.25  # default setting from ST-MoE (see top of page 6)
-    eval_capacity: float = 2.0
-    min_capacity: int = 4  # minimum batch size to send to any single expert
-    stride: int = 1 # one in every stride layers are converted to an MoE
-    moe_start_layer: int = 0 # layer index to start using MoE layers, if n_exp > 1
-    use_switch_tfm_init: bool = False  # use weight init scheme from Switch Transformer
-    switch_tfm_init_scale: float = 1.0
-    router_use_full_prec: bool = False  # use float32 precision in the router
-    use_qwen3_moe_mlp: bool = False  # use Qwen3-style MoE MLPs
-
-class GPT(nn.Module):
+class GPT(PreTrainedModel, GenerationMixin):
+    config_class = GPTConfig
+    base_model_prefix = "transformer"
+    supports_gradient_checkpointing = True
+    _no_split_modules = ["Block"]
+    _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, config):
-        super().__init__()
+        super().__init__(config)
         assert config.vocab_size is not None
         assert config.block_size is not None
-        self.config = config
 
         if config.n_exp == 1:
             # create normal transformer blocks
@@ -608,8 +649,23 @@ class GPT(nn.Module):
             if pn.endswith('c_proj.weight') or pn.endswith('experts.c_proj'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
+        # Initialize weights using HF pattern
+        self.post_init()
+        
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+    
+    def get_input_embeddings(self):
+        return self.transformer.wte
+    
+    def set_input_embeddings(self, value):
+        self.transformer.wte = value
+    
+    def get_output_embeddings(self):
+        return self.lm_head
+    
+    def set_output_embeddings(self, new_embeddings):
+        self.lm_head = new_embeddings
 
     def get_num_params(self, non_embedding=True):
         """
@@ -698,14 +754,31 @@ class GPT(nn.Module):
             # just use standard initialization scheme for embedding always
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
-        device = idx.device
-        b, t = idx.size()
+    def forward(
+        self,
+        input_ids=None,
+        attention_mask=None,
+        labels=None,
+        idx=None,  # Keep backward compatibility
+        targets=None,  # Keep backward compatibility
+        return_dict=None,
+        **kwargs,
+    ):
+        # Handle backward compatibility: idx/targets or input_ids/labels
+        if idx is not None:
+            input_ids = idx
+        if targets is not None:
+            labels = targets
+            
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict if hasattr(self.config, 'use_return_dict') else True
+        
+        device = input_ids.device
+        b, t = input_ids.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
         # forward the GPT model itself
-        tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
+        tok_emb = self.transformer.wte(input_ids) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = tok_emb + pos_emb
         for block in self.transformer.h:
@@ -720,10 +793,10 @@ class GPT(nn.Module):
                    'gate_output_loss': 0
                  }
 
-        if targets is not None:
+        if labels is not None:
             # if we are given some desired targets also calculate the loss
             logits = self.lm_head(x)
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-1)
             losses['ntp_loss'] = loss.item()
 
             # add the auxiliary load balancing loss and router z loss to the main loss
@@ -757,7 +830,18 @@ class GPT(nn.Module):
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss, losses
+        if not return_dict:
+            # Legacy return format: (logits, loss, losses)
+            return logits, loss, losses
+            
+        # HuggingFace return format
+        return CausalLMOutputWithPast(
+            loss=loss,
+            logits=logits,
+            past_key_values=None,
+            hidden_states=None,
+            attentions=None,
+        )
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
@@ -771,7 +855,12 @@ class GPT(nn.Module):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
 
     @classmethod
-    def from_pretrained(cls, model_type, override_args=None):
+    def from_pretrained_gpt2(cls, model_type, override_args=None):
+        """
+        Load weights from official GPT-2 checkpoints.
+        This is a legacy method kept for backward compatibility.
+        For HuggingFace compatibility, use AutoModelForCausalLM.from_pretrained() instead.
+        """
         assert not 'moe' in model_type, "Pretrained checkpoints not available for MoE"
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         override_args = override_args or {} # default to empty dict
@@ -897,9 +986,14 @@ class GPT(nn.Module):
             breakpoint()
         return mfu
 
+    def prepare_inputs_for_generation(self, input_ids, **kwargs):
+        """Prepare inputs for generation."""
+        return {"input_ids": input_ids}
+    
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    def generate_legacy(self, idx, max_new_tokens, temperature=1.0, top_k=None):
         """
+        Legacy generation method for backward compatibility.
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
@@ -908,7 +1002,8 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            output = self(idx_cond, return_dict=True)
+            logits = output.logits
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
@@ -922,4 +1017,11 @@ class GPT(nn.Module):
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
-        return idx   
+        return idx
+
+
+# Register the model with AutoModel
+from transformers import AutoConfig, AutoModelForCausalLM
+
+AutoConfig.register("nanomoe_gpt", GPTConfig)
+AutoModelForCausalLM.register(GPTConfig, GPT)
