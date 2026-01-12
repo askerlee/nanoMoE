@@ -4,7 +4,7 @@ Test script to verify the model is compatible with HuggingFace's AutoModelForCau
 
 import torch
 from transformers import AutoModelForCausalLM, AutoConfig
-from model import GPT, GPTConfig
+from modeling_nanomoe_gpt import GPT, GPTConfig
 import tempfile
 import os
 

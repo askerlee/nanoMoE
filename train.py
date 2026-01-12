@@ -32,7 +32,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 from torch.profiler import profile, record_function, ProfilerActivity
 
-from model import GPTConfig, GPT
+from modeling_nanomoe_gpt import GPTConfig, GPT
 from data.tinystories.dataloader import get_dataloader, ChunkDataset
 import numpy as np
 import random
@@ -52,9 +52,9 @@ def seed_worker(worker_seed):
 out_dir = 'out'
 log_interval = 25
 eval_only = False # if True, script exits right after the first eval
-save_ckpt_every_n_evals = 1 # if -1, never save checkpoints
+save_ckpt_every_n_evals = 50 # if -1, never save checkpoints
 # if True, always save a checkpoint after each eval, no matter whether the val loss is optimal.
-always_save_checkpoint = True 
+save_ckpt_regardless_loss = True 
 ckpt_prefix = "nanomoe"
 init_from = 'scratch' # 'scratch' or 'gpt2*'
 seed = 1337
@@ -449,13 +449,22 @@ for epoch in range(math.ceil(num_epochs)):
                     "tokens_seen": global_iter * batch_size * block_size,
                     "eval_count": eval_count,
                 }, step=global_iter)
-            if save_ckpt_every_n_evals != -1 and (val_loss < best_val_loss or always_save_checkpoint) and (eval_count % save_ckpt_every_n_evals == 0):
+            if save_ckpt_every_n_evals != -1 and (val_loss < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
                 best_val_loss = val_loss
                 
                 # Save model using HuggingFace format
                 ckpt_dir = os.path.join(out_dir, f'{ckpt_prefix}-{eval_count}')
                 print(f"saving checkpoint to {ckpt_dir}")
                 raw_model.save_pretrained(ckpt_dir)
+                
+                # Copy necessary files for trust_remote_code loading
+                import shutil
+                for filename in ['configuration_nanomoe_gpt.py', 'modeling_nanomoe_gpt.py', 'manager.py']:
+                    src = os.path.join(os.path.dirname(__file__), filename)
+                    dst = os.path.join(ckpt_dir, filename)
+                    if os.path.exists(src):
+                        shutil.copy(src, dst)
+                print(f"copied model files for trust_remote_code loading")
                 
         if eval_only and epoch == 0 and batch_idx == 0:
             # Run one evaluation then exit

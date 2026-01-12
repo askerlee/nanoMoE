@@ -1,15 +1,10 @@
 """
-Full definition of a GPT Language Model, all of it in this single file.
-References:
-1) the official GPT-2 TensorFlow implementation released by OpenAI:
-https://github.com/openai/gpt-2/blob/master/src/model.py
-2) huggingface/transformers PyTorch implementation:
-https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
+Full definition of a NanoMoE GPT Language Model.
+This file contains all the model components for HuggingFace compatibility.
 """
 
 import math
 import inspect
-from dataclasses import dataclass
 from contextlib import nullcontext
 
 import torch
@@ -18,8 +13,9 @@ from torch.nn import functional as F
 
 from manager import MANAGER
 from transformers.activations import SiLUActivation
-from transformers import GenerationMixin, PretrainedConfig, PreTrainedModel
+from transformers import GenerationMixin, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from configuration_nanomoe_gpt import GPTConfig
 
 
 # Revised from RevGrad, by removing the grad negation.
@@ -531,76 +527,6 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
-class GPTConfig(PretrainedConfig):
-    model_type = "nanomoe_gpt"
-    
-    def __init__(
-        self,
-        block_size: int = 1024,
-        vocab_size: int = 50304,  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-        n_layer: int = 12,
-        n_head: int = 12,
-        n_embd: int = 768,
-        bias: bool = True,  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
-        # MoE-related configs
-        n_exp: int = 1,  # if n_exp = 1 we just use regular MLP layers
-        moe_top_k: int = 2,  # renamed from top_k to avoid conflict with generation top_k
-        use_aux_loss: bool = False,  # apply auxiliary loss (from Switch Transformer) in router
-        use_router_z_loss: bool = False,  # apply router z loss (from ST-MoE)
-        use_router_ortho_loss: bool = False,  # apply router orthogonality loss
-        use_experts_ortho_loss: bool = True,  # always compute experts orthogonality loss for ablation study
-        use_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
-        use_noisy_top_k: bool = False,
-        aux_loss_weight: float = 0.01,  # default setting from Switch Transformer (see top of page 8)
-        router_z_loss_weight: float = 0.001,  # default setting from ST-MoE (see page 8 eq. 6)
-        router_ortho_loss_weight: float = 0.01,  # default weight for orthogonality loss
-        router_ortho_neg_corr_weight: float = 1,  # weight for negative correlations in router-ortho loss
-        # experts_ortho_loss is very small due to squared cosine similarities.
-        # So its weight is set higher to have a meaningful effect.
-        experts_ortho_loss_weight: float = 0.01,
-        gate_output_loss_weight: float = 0.01,  # default weight for gate output regularization loss
-        train_capacity: float = 1.25,  # default setting from ST-MoE (see top of page 6)
-        eval_capacity: float = 2.0,
-        min_capacity: int = 4,  # minimum batch size to send to any single expert
-        stride: int = 1,  # one in every stride layers are converted to an MoE
-        moe_start_layer: int = 0,  # layer index to start using MoE layers, if n_exp > 1
-        use_switch_tfm_init: bool = False,  # use weight init scheme from Switch Transformer
-        switch_tfm_init_scale: float = 1.0,
-        router_use_full_prec: bool = False,  # use float32 precision in the router
-        use_qwen3_moe_mlp: bool = False,  # use Qwen3-style MoE MLPs
-        **kwargs,
-    ):
-        super().__init__(**kwargs)
-        
-        self.block_size = block_size
-        self.vocab_size = vocab_size
-        self.n_layer = n_layer
-        self.n_head = n_head
-        self.n_embd = n_embd
-        self.bias = bias
-        self.n_exp = n_exp
-        self.moe_top_k = moe_top_k  # Store with moe_ prefix to avoid HF generation conflict
-        self.use_aux_loss = use_aux_loss
-        self.use_router_z_loss = use_router_z_loss
-        self.use_router_ortho_loss = use_router_ortho_loss
-        self.use_experts_ortho_loss = use_experts_ortho_loss
-        self.use_gate_output_loss = use_gate_output_loss
-        self.use_noisy_top_k = use_noisy_top_k
-        self.aux_loss_weight = aux_loss_weight
-        self.router_z_loss_weight = router_z_loss_weight
-        self.router_ortho_loss_weight = router_ortho_loss_weight
-        self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
-        self.experts_ortho_loss_weight = experts_ortho_loss_weight
-        self.gate_output_loss_weight = gate_output_loss_weight
-        self.train_capacity = train_capacity
-        self.eval_capacity = eval_capacity
-        self.min_capacity = min_capacity
-        self.stride = stride
-        self.moe_start_layer = moe_start_layer
-        self.use_switch_tfm_init = use_switch_tfm_init
-        self.switch_tfm_init_scale = switch_tfm_init_scale
-        self.router_use_full_prec = router_use_full_prec
-        self.use_qwen3_moe_mlp = use_qwen3_moe_mlp
 
 class GPT(PreTrainedModel, GenerationMixin):
     config_class = GPTConfig
@@ -1020,7 +946,7 @@ class GPT(PreTrainedModel, GenerationMixin):
         return idx
 
 
-# Register the model with AutoModel
+# Register the model with HuggingFace AutoModel
 from transformers import AutoConfig, AutoModelForCausalLM
 
 AutoConfig.register("nanomoe_gpt", GPTConfig)
