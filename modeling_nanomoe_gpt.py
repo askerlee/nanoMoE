@@ -725,9 +725,11 @@ class GPT(PreTrainedModel, GenerationMixin):
                    'gate_output_loss': 0
                  }
 
+        # Always compute logits for all positions (HuggingFace standard)
+        logits = self.lm_head(x)
+        
         if labels is not None:
-            # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
+            # Compute loss when labels are provided
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-1)
             losses['ntp_loss'] = loss.item()
 
@@ -758,8 +760,7 @@ class GPT(PreTrainedModel, GenerationMixin):
                 losses['gate_output_loss'] = gate_output_loss.item() if isinstance(gate_output_loss, torch.Tensor) else gate_output_loss
                 MANAGER.reset_gate_output_loss()
         else:
-            # inference-time mini-optimization: only forward the lm_head on the very last position
-            logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
+            # No labels provided - inference mode
             loss = None
 
         if not return_dict:
