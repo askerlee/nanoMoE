@@ -46,7 +46,7 @@ router_use_full_prec = True
 use_qwen3_moe_mlp = True
 
 # use smaller GPT model
-n_layer = 4
+n_layer = 8
 # The first two layers are dense layers.
 moe_start_layer = 2 
 # Since layer 2, all mlps are MoEs.
