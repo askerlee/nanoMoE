@@ -67,7 +67,7 @@ wandb_run_name = 'gpt2-124M-owt' + str(time.time())
 
 # data
 # tinystories is too easy. We revert to openwebtext.
-datasets = ['fineweb_10b', 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_10b'
+datasets = ['fineweb_30b'] #, 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_30b'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12     # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024   # Training tokens per sample
@@ -205,10 +205,10 @@ num_workers = min(4, os.cpu_count() or 1)
 
 combined_train_dataset = torch.utils.data.ConcatDataset(train_datasets)
 # batch_size = 64
-# block_size = 512
-# Each batch contains 64*512 = 32K tokens.
+# block_size = 1024
+# Each batch contains 64*1024 = 64K tokens.
 # The evaluation dataset contains 4899304+4434606 = 9300K tokens = 284 batches.
-# The first dataset, fineweb_10b, contains 4899304 tokens = 153 batches.
+# The first dataset, fineweb_30b, contains 4899304 tokens = 153 batches.
 # The second dataset, openwebtext, contains 4434606 tokens = 131 batches.
 train_loader = torch.utils.data.DataLoader(
     combined_train_dataset,
