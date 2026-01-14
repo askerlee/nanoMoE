@@ -54,7 +54,8 @@ if __name__ == '__main__':
     
     print("Streaming and tokenizing samples...")
     # Each sample is a single document in the original dataset with varying lengths.
-    for sample in tqdm(dataset, total=estimated_samples):
+    pbar = tqdm(total=target_tokens, unit='tokens', unit_scale=True)
+    for sample in dataset:
         ids = enc.encode_ordinary(sample['text'])
         ids.append(enc.eot_token)
         
@@ -63,10 +64,12 @@ if __name__ == '__main__':
         arr[idx : idx + token_count] = ids
         idx += token_count
         total_tokens += token_count
+        pbar.update(token_count)
         
         # Since the samples have varying lengths, we check if we've reached target.
         if total_tokens >= target_tokens:
             break
+    pbar.close()
     
     # Trim to actual size
     arr.flush()
