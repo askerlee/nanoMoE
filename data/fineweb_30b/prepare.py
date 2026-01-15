@@ -80,8 +80,6 @@ if __name__ == '__main__':
     
     print(f"Creating train/val split ({train_size:,} train, {val_size:,} val)...")
     
-    indices = np.arange(idx)
-    
     # Write train and val files
     train_file = os.path.join(DATA_CACHE_DIR, 'train.bin')
     val_file = os.path.join(DATA_CACHE_DIR, 'val.bin')
@@ -94,14 +92,14 @@ if __name__ == '__main__':
     batch_size = 10_000_000
     for i in tqdm(range(0, train_size, batch_size)):
         end = min(i + batch_size, train_size)
-        train_arr[i:end] = arr[indices[i:end]]
+        train_arr[i:end] = arr[i:end]
     train_arr.flush()
     
     # Copy to val
     print("Writing val.bin...")
     for i in tqdm(range(0, val_size, batch_size)):
         end = min(i + batch_size, val_size)
-        val_arr[i:end] = arr[indices[train_size + i:train_size + end]]
+        val_arr[i:end] = arr[train_size + i:train_size + end]
     val_arr.flush()
     
     # Cleanup
