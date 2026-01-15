@@ -20,9 +20,6 @@ remote_name = "sample-100BT"
 # Target number of tokens (30B)
 target_tokens = 30_000_000_000
 
-# number of workers in .map() call
-num_proc = max(1, os.cpu_count()//2)
-
 # create the cache the local directory if it doesn't exist yet
 DATA_CACHE_DIR = os.path.dirname(__file__)
 
@@ -55,6 +52,11 @@ if __name__ == '__main__':
         
         # Write directly to memmap
         token_count = len(ids)
+        remaining = arr.shape[0] - idx
+        if token_count > remaining:
+            ids = ids[:remaining]
+            token_count = len(ids)
+
         arr[idx : idx + token_count] = ids
         idx += token_count
         total_tokens += token_count
