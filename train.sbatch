@@ -1,6 +1,7 @@
 #!/bin/bash
 #SBATCH -N 1
 #SBATCH --gres=gpu:1
+#SBATCH --mem-per-cpu=256G
 #SBATCH -p testqueue
 #SBATCH -A aicloud-testgroup
 #SBATCH -t 18:00:00
