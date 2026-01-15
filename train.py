@@ -90,7 +90,7 @@ wandb_run_name = 'gpt2-124M-owt' + str(time.time())
 
 # data
 # tinystories is too easy. We revert to openwebtext.
-datasets = ['fineweb_30b', 'openwebtext'] #, 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_30b'
+datasets = ['fineweb_30b'] #, 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_30b'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12     # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024   # Training tokens per sample
