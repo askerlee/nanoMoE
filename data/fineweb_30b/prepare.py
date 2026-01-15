@@ -40,7 +40,6 @@ if __name__ == '__main__':
     
     arr = np.memmap(temp_file, dtype=dtype, mode='w+', shape=(target_tokens + 10_000_000,))
     
-    idx = 0
     total_tokens = 0
     
     print("Streaming and tokenizing samples...")
@@ -52,13 +51,12 @@ if __name__ == '__main__':
         
         # Write directly to memmap
         token_count = len(ids)
-        remaining = arr.shape[0] - idx
+        remaining = arr.shape[0] - total_tokens
         if token_count > remaining:
             ids = ids[:remaining]
             token_count = len(ids)
 
-        arr[idx : idx + token_count] = ids
-        idx += token_count
+        arr[total_tokens : total_tokens + token_count] = ids
         total_tokens += token_count
         pbar.update(token_count)
         
@@ -73,14 +71,14 @@ if __name__ == '__main__':
     
     # Truncate file to actual length to save disk space
     with open(temp_file, 'r+b') as f:
-        f.truncate(idx * np.dtype(dtype).itemsize)
+        f.truncate(total_tokens * np.dtype(dtype).itemsize)
     
-    arr = np.memmap(temp_file, dtype=dtype, mode='r', shape=(idx,))
+    arr = np.memmap(temp_file, dtype=dtype, mode='r', shape=(total_tokens,))
     print(f"Collected {total_tokens:,} tokens")
     
     # Create train/val split
-    val_size = int(idx * 0.0005)
-    train_size = idx - val_size
+    val_size = int(total_tokens * 0.0005)
+    train_size = total_tokens - val_size
     
     print(f"Creating train/val split ({train_size:,} train, {val_size:,} val)...")
     
