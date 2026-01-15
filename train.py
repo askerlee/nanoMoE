@@ -124,8 +124,8 @@ grad_clip = 0.0 # clip gradients at this value, or disable if == 0.0
 # epoch-based training
 num_epochs = 1.0  # total number of epochs to train (can be fractional)
 evals_per_epoch = 10  # number of evaluations per epoch
-warmup_frac = 0.01  # fraction of total steps used for warmup
-decay_frac = 0.1    # fraction of total steps used for final decay
+warmup_frac = 0.004  # fraction of total steps used for warmup
+decay_frac = 0.1     # fraction of total steps used for final decay
 
 # learning rate schedule
 decay_lr = True  # whether to use the warmup/stable/decay schedule
