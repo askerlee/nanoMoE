@@ -41,12 +41,6 @@ if __name__ == '__main__':
     temp_file = os.path.join(DATA_CACHE_DIR, 'temp_all.bin')
     dtype = np.uint16
     
-    # Estimate tokens per sample to pre-allocate (average ~500 tokens per sample)
-    # Over-allocate to avoid resizing, we'll trim later
-    # average 500: FineWeb-Edu contains web documents with varying lengths.
-    # Some might be 100 tokens, others 2000+ tokens. 
-    # Claude guessed ~500 as a ballpark average.
-    estimated_samples = int(target_tokens / 500 * 1.1)
     arr = np.memmap(temp_file, dtype=dtype, mode='w+', shape=(target_tokens + 10_000_000,))
     
     idx = 0
@@ -86,14 +80,7 @@ if __name__ == '__main__':
     
     print(f"Creating train/val split ({train_size:,} train, {val_size:,} val)...")
     
-    # Shuffle indices
-    np.random.seed(2357)
     indices = np.arange(idx)
-    # Chunk-based shuffle to avoid memory issues with huge arrays
-    chunk_size = 100_000_000
-    for i in range(0, idx, chunk_size):
-        end = min(i + chunk_size, idx)
-        np.random.shuffle(indices[i:end])
     
     # Write train and val files
     train_file = os.path.join(DATA_CACHE_DIR, 'train.bin')

@@ -47,13 +47,27 @@ def seed_worker(worker_seed):
     torch.manual_seed(worker_seed)
     torch.cuda.manual_seed_all(worker_seed)
 
-# Create deterministic sampler for reproducible shuffling
-def get_epoch_sampler(dataset, epoch, seed):
-    """Create a sampler with deterministic shuffling based on epoch"""
-    g = torch.Generator()
-    g.manual_seed(seed + epoch)  # Different seed per epoch
-    indices = torch.randperm(len(dataset), generator=g).tolist()
-    return torch.utils.data.SubsetRandomSampler(indices)
+# Create deterministic sampler for reproducible shuffling with DDP support
+def get_epoch_sampler(dataset, epoch, seed, ddp_world_size=1, ddp_rank=0):
+    """Create a sampler with deterministic shuffling based on epoch, sharded for DDP"""
+    if ddp_world_size > 1:
+        # Use DistributedSampler for proper DDP data sharding
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset,
+            num_replicas=ddp_world_size,
+            rank=ddp_rank,
+            shuffle=True,
+            seed=seed,
+            drop_last=True,
+        )
+        sampler.set_epoch(epoch)
+        return sampler
+    else:
+        # Single-GPU: use SubsetRandomSampler with deterministic shuffling
+        g = torch.Generator()
+        g.manual_seed(seed + epoch)  # Different seed per epoch
+        indices = torch.randperm(len(dataset), generator=g).tolist()
+        return torch.utils.data.SubsetRandomSampler(indices)
 
 
 # -----------------------------------------------------------------------------
@@ -217,7 +231,8 @@ combined_train_dataset = torch.utils.data.ConcatDataset(train_datasets)
 # batch_size = 64
 # block_size = 1024
 # Each batch contains 64*1024 = 64K tokens.
-train_sampler = get_epoch_sampler(combined_train_dataset, epoch=0, seed=seed)
+train_sampler = get_epoch_sampler(combined_train_dataset, epoch=0, seed=seed, 
+                                   ddp_world_size=ddp_world_size, ddp_rank=ddp_rank if ddp else 0)
 train_loader = torch.utils.data.DataLoader(
     combined_train_dataset,
     batch_size=batch_size,
@@ -271,15 +286,6 @@ print(f"  Tokens per epoch: {tokens_per_epoch:,}")
 # training state
 best_val_loss = 1e9
 
-# attempt to derive vocab_size from the dataset
-meta_path = os.path.join(data_dir, 'meta.pkl')
-meta_vocab_size = None
-if os.path.exists(meta_path):
-    with open(meta_path, 'rb') as f:
-        meta = pickle.load(f)
-    meta_vocab_size = meta['vocab_size']
-    print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
-
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   bias=bias, vocab_size=None, n_exp=n_exp, moe_top_k=moe_top_k,
@@ -306,9 +312,8 @@ if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
     # determine the vocab size we'll use for from-scratch training
-    if meta_vocab_size is None:
-        print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
-    model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
+    print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
+    model_args['vocab_size'] = 50304
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
 elif init_from.startswith('gpt2'):
@@ -456,7 +461,8 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
 for epoch in range(start_epoch, math.ceil(num_epochs)):
     # Recreate sampler with epoch-specific seed for all epochs except the first (already created above)
     if epoch != 0:
-        train_sampler = get_epoch_sampler(combined_train_dataset, epoch, seed)
+        train_sampler = get_epoch_sampler(combined_train_dataset, epoch, seed,
+                                         ddp_world_size=ddp_world_size, ddp_rank=ddp_rank if ddp else 0)
         train_loader = torch.utils.data.DataLoader(
             combined_train_dataset,
             batch_size=batch_size,
@@ -466,6 +472,10 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             drop_last=True,
             worker_init_fn=lambda worker_id: seed_worker(seed + seed_offset + worker_id)
         )
+    else:
+        # For epoch 0, just update the existing sampler if using DistributedSampler
+        if isinstance(train_sampler, torch.utils.data.distributed.DistributedSampler):
+            train_sampler.set_epoch(epoch)
 
     if master_process:
         print(f"\n=== Epoch {epoch + 1}/{num_epochs} ===")
