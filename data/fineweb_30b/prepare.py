@@ -69,41 +69,37 @@ if __name__ == '__main__':
     arr.flush()
     del arr
     
-    # Resize to actual length
-    arr = np.memmap(temp_file, dtype=dtype, mode='r+', shape=(idx,))
-    arr.flush()
+    # Truncate file to actual length to save disk space
+    with open(temp_file, 'r+b') as f:
+        f.truncate(idx * np.dtype(dtype).itemsize)
+    
+    arr = np.memmap(temp_file, dtype=dtype, mode='r', shape=(idx,))
     print(f"Collected {total_tokens:,} tokens")
     
-    # Create train/val split (shuffle in chunks to avoid loading all into RAM)
+    # Create train/val split
     val_size = int(idx * 0.0005)
     train_size = idx - val_size
     
     print(f"Creating train/val split ({train_size:,} train, {val_size:,} val)...")
     
-    # Write train and val files
-    train_file = os.path.join(DATA_CACHE_DIR, 'train.bin')
+    # Write val file first (copy the tail)
     val_file = os.path.join(DATA_CACHE_DIR, 'val.bin')
-    
-    train_arr = np.memmap(train_file, dtype=dtype, mode='w+', shape=(train_size,))
     val_arr = np.memmap(val_file, dtype=dtype, mode='w+', shape=(val_size,))
     
-    # Copy to train
-    print("Writing train.bin...")
-    batch_size = 10_000_000
-    for i in tqdm(range(0, train_size, batch_size)):
-        end = min(i + batch_size, train_size)
-        train_arr[i:end] = arr[i:end]
-    train_arr.flush()
-    
-    # Copy to val
     print("Writing val.bin...")
+    batch_size = 10_000_000
     for i in tqdm(range(0, val_size, batch_size)):
         end = min(i + batch_size, val_size)
         val_arr[i:end] = arr[train_size + i:train_size + end]
     val_arr.flush()
+    del val_arr
     
-    # Cleanup
-    del arr, train_arr, val_arr
-    os.remove(temp_file)
-    
+    # Truncate temp file to train size and rename it
+    print("Creating train.bin...")
+    del arr
+    train_file = os.path.join(DATA_CACHE_DIR, 'train.bin')
+    with open(temp_file, 'r+b') as f:
+        f.truncate(train_size * np.dtype(dtype).itemsize)
+    os.rename(temp_file, train_file)
+
     print(f"Done! train.bin: {train_size:,} tokens, val.bin: {val_size:,} tokens")
