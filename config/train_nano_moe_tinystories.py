@@ -27,7 +27,7 @@ experts_ortho_loss_weight = 0.01
 
 use_noisy_top_k = False
 train_capacity = 1.25
-eval_capacity = 2.0
+eval_capacity = 3.0
 stride = 2
 use_switch_tfm_init = True
 router_use_full_prec = True

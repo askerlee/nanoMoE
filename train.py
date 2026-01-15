@@ -47,6 +47,15 @@ def seed_worker(worker_seed):
     torch.manual_seed(worker_seed)
     torch.cuda.manual_seed_all(worker_seed)
 
+# Create deterministic sampler for reproducible shuffling
+def get_epoch_sampler(dataset, epoch, seed):
+    """Create a sampler with deterministic shuffling based on epoch"""
+    g = torch.Generator()
+    g.manual_seed(seed + epoch)  # Different seed per epoch
+    indices = torch.randperm(len(dataset), generator=g).tolist()
+    return torch.utils.data.SubsetRandomSampler(indices)
+
+
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) with epoch-based training
 # I/O
@@ -96,7 +105,7 @@ router_ortho_neg_corr_weight = 1  # weight for negative correlations in router-o
 experts_ortho_loss_weight = 0.01  
 gate_output_loss_weight = 0.01
 train_capacity = 1.25
-eval_capacity = 2.0
+eval_capacity = 3.0
 min_capacity = 4
 stride = 2
 moe_start_layer = 2
@@ -202,21 +211,21 @@ for dataset in datasets:
 # ConcatDataset concatenates datasets sequentially, then shuffle=True mixes samples
 # This allows batches to contain samples from different base datasets
 num_workers = min(4, os.cpu_count() or 1)
-
 combined_train_dataset = torch.utils.data.ConcatDataset(train_datasets)
+
+# Don't use shuffle=True, use sampler instead for reproducible shuffling.
 # batch_size = 64
 # block_size = 1024
 # Each batch contains 64*1024 = 64K tokens.
-# The evaluation dataset contains 4899304+4434606 = 9300K tokens = 284 batches.
-# The first dataset, fineweb_30b, contains 4899304 tokens = 153 batches.
-# The second dataset, openwebtext, contains 4434606 tokens = 131 batches.
+train_sampler = get_epoch_sampler(combined_train_dataset, epoch=0, seed=seed)
 train_loader = torch.utils.data.DataLoader(
     combined_train_dataset,
     batch_size=batch_size,
-    shuffle=True,  # This shuffles across ALL datasets, mixing samples in batches
+    sampler=train_sampler,  # Use sampler instead of shuffle
     num_workers=num_workers,
     pin_memory=True if device_type == 'cuda' else False,
-    drop_last=True
+    drop_last=True,
+    worker_init_fn=lambda worker_id: seed_worker(seed + seed_offset + worker_id)
 )
 
 combined_val_dataset = torch.utils.data.ConcatDataset(val_datasets)
@@ -413,15 +422,75 @@ if use_profiler and master_process:
 
 global_iter = 0
 eval_count = 0
+start_epoch = 0
+start_batch_idx = 0
 
-for epoch in range(math.ceil(num_epochs)):
+# Add this logic at the start of training (after optimizer creation):
+resume_from = None  # or set to checkpoint directory path
+
+if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')):
+    print(f"Resuming training from {resume_from}")
+    
+    # Load model
+    model = GPT.from_pretrained(resume_from, trust_remote_code=True)
+    model.to(device)
+    
+    # Load training state
+    training_state = torch.load(os.path.join(resume_from, 'training_state.pt'), map_location=device)
+    optimizer.load_state_dict(training_state['optimizer_state_dict'])
+    scaler.load_state_dict(training_state['scaler_state_dict'])
+    global_iter = training_state['global_iter']
+    eval_count = training_state['eval_count']
+    best_val_loss = training_state['best_val_loss']
+    start_epoch = training_state.get('epoch', 0)
+    start_batch_idx = training_state.get('batch_idx', 0)
+    
+    # Restore RNG states
+    torch.set_rng_state(training_state['rng_state'])
+    np.random.set_state(training_state['numpy_rng_state'])
+    random.setstate(training_state['python_rng_state'])
+    if 'cuda_rng_state' in training_state and torch.cuda.is_available():
+        torch.cuda.set_rng_state(training_state['cuda_rng_state'])
+    print(f"Resumed from epoch {start_epoch}, batch {start_batch_idx}, iter {global_iter}")
+
+for epoch in range(start_epoch, math.ceil(num_epochs)):
+    # Recreate sampler with epoch-specific seed for all epochs except the first (already created above)
+    if epoch != 0:
+        train_sampler = get_epoch_sampler(combined_train_dataset, epoch, seed)
+        train_loader = torch.utils.data.DataLoader(
+            combined_train_dataset,
+            batch_size=batch_size,
+            sampler=train_sampler,
+            num_workers=num_workers,
+            pin_memory=True if device_type == 'cuda' else False,
+            drop_last=True,
+            worker_init_fn=lambda worker_id: seed_worker(seed + seed_offset + worker_id)
+        )
+
     if master_process:
         print(f"\n=== Epoch {epoch + 1}/{num_epochs} ===")
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}", unit="batch")
-    else:
-        pbar = train_loader
     
-    for batch_idx, (X, Y) in enumerate(pbar):
+    # If resuming mid-epoch, skip batches
+    skip_batches = start_batch_idx if epoch == start_epoch else 0
+    if skip_batches > 0:
+        print(f"Skipping {skip_batches} batches to resume from checkpoint")
+        iterator = iter(train_loader)
+        for _ in range(skip_batches):
+            next(iterator)
+        if master_process:
+            pbar = tqdm(enumerate(iterator, start=skip_batches), 
+                       initial=skip_batches, total=len(train_loader),
+                       desc=f"Epoch {epoch + 1}/{num_epochs}", unit="batch")
+        else:
+            pbar = enumerate(iterator, start=skip_batches)
+    else:
+        if master_process:
+            pbar = tqdm(enumerate(train_loader), total=len(train_loader),
+                       desc=f"Epoch {epoch + 1}/{num_epochs}", unit="batch")
+        else:
+            pbar = enumerate(train_loader)
+        
+    for batch_idx, (X, Y) in pbar:
         if global_iter >= total_iters:
             break
         grad_norm = None  # Initialize gradient norm for logging
@@ -472,6 +541,24 @@ for epoch in range(math.ceil(num_epochs)):
                         shutil.copy(src, dst)
                 print(f"copied model files for trust_remote_code loading")
                 
+                # Add to training state
+                training_state = {
+                    'global_iter': global_iter,
+                    'eval_count': eval_count,
+                    'best_val_loss': best_val_loss,
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scaler_state_dict': scaler.state_dict(),
+                    'config': config,
+                    'model_args': model_args,
+                    'epoch': epoch,
+                    'batch_idx': batch_idx,  # track position within epoch
+                    'rng_state': torch.get_rng_state(),  # PyTorch RNG state
+                    'numpy_rng_state': np.random.get_state(),  # NumPy RNG state
+                    'python_rng_state': random.getstate(),  # Python RNG state
+                    'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                }
+                torch.save(training_state, os.path.join(ckpt_dir, 'training_state.pt'))
+
         if eval_only and epoch == 0 and batch_idx == 0:
             # Run one evaluation then exit
             val_loss = estimate_loss()
@@ -483,7 +570,7 @@ for epoch in range(math.ceil(num_epochs)):
         
         # Handle DDP gradient sync - only sync when we're about to step the optimizer
         if ddp:
-            model.require_backward_grad_sync = (global_iter % gradient_accumulation_steps == gradient_accumulation_steps - 1)
+            model.require_backward_grad_sync = ((global_iter + 1) % gradient_accumulation_steps == 0)
         
         # Forward and backward pass for this batch
         with record_function("forward_backward"):

@@ -40,7 +40,7 @@ gate_output_loss_weight = 0.0001
 use_noisy_top_k = False
 # Intentionally use a small capacity to show the advantage of the router ortho loss.
 train_capacity = 1 #1.25
-eval_capacity = 2.0
+eval_capacity = 3.0
 use_switch_tfm_init = True
 router_use_full_prec = True
 use_qwen3_moe_mlp = True
