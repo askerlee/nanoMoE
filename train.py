@@ -124,7 +124,7 @@ grad_clip = 0.0 # clip gradients at this value, or disable if == 0.0
 # epoch-based training
 num_epochs = 1.0  # total number of epochs to train (can be fractional)
 evals_per_epoch = 10  # number of evaluations per epoch
-warmup_frac = 0.004  # fraction of total steps used for warmup
+warmup_tokens = 20_000_000  # absolute number of tokens for warmup (20M)
 decay_frac = 0.1     # fraction of total steps used for final decay
 
 # learning rate schedule
@@ -247,12 +247,12 @@ print(f"Validation batches per eval: {len(val_loader)}")
 # Calculate epoch parameters
 iters_per_epoch = len(train_loader)
 total_iters = int(num_epochs * iters_per_epoch)
-warmup_iters = int(warmup_frac * total_iters)
+tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
+warmup_iters = int(warmup_tokens / tokens_per_iter)  # Convert tokens to iterations
 decay_iters = int(decay_frac * total_iters)
 decay_start = total_iters - decay_iters
 eval_every_n_iters = max(1, iters_per_epoch // evals_per_epoch)
 
-tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
 tokens_per_epoch = tokens_per_iter * iters_per_epoch
 
 print(f"Epoch configuration:")
