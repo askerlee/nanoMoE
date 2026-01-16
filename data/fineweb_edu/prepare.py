@@ -103,9 +103,9 @@ if __name__ == '__main__':
     del val_arr
     
     # Truncate temp file to train size and rename it
-    print(f"Creating train-{args. size}B.bin...")
+    print(f"Creating train-{args.size}B.bin...")
     del arr
-    train_file = os.path.join(DATA_CACHE_DIR, f'train-{args.size}B. bin')
+    train_file = os.path.join(DATA_CACHE_DIR, f'train-{args.size}B.bin')
     with open(temp_file, 'r+b') as f:
         f.truncate(train_size * np.dtype(dtype).itemsize)
     os.rename(temp_file, train_file)
