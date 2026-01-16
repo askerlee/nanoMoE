@@ -151,6 +151,7 @@ backend = 'nccl' # 'nccl', 'gloo', etc.
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = True # use PyTorch 2.0 to compile the model to be faster
+resume_from = None  # Override to resume from a checkpoint directory.
 
 # profiling
 use_profiler = False # enable PyTorch profiler
@@ -435,9 +436,6 @@ global_iter = 0
 eval_count = 0
 start_epoch = 0
 start_batch_idx = 0
-
-# Add this logic at the start of training (after optimizer creation):
-resume_from = None  # or set to checkpoint directory path
 
 if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')):
     print(f"Resuming training from {resume_from}")
