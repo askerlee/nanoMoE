@@ -480,7 +480,12 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
     np.random.set_state(training_state['numpy_rng_state'])
     random.setstate(training_state['python_rng_state'])
     if 'cuda_rng_state' in training_state and torch.cuda.is_available():
-        torch.cuda.set_rng_state(training_state['cuda_rng_state'])
+        cuda_rng_state = training_state['cuda_rng_state']
+        if isinstance(cuda_rng_state, torch.Tensor):
+            cuda_rng_state = cuda_rng_state.detach().to(device='cpu', dtype=torch.uint8)
+        else:
+            cuda_rng_state = torch.as_tensor(cuda_rng_state, dtype=torch.uint8, device='cpu')
+        torch.cuda.set_rng_state(cuda_rng_state)
     print(f"Resumed from epoch {start_epoch}, batch {start_batch_idx}, iter {global_iter}")
 
 raw_model = model.module if ddp else model
