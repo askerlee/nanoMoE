@@ -18,3 +18,4 @@ wandb/
 *out0
 *out1
 *out
+*.zst*
