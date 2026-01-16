@@ -472,8 +472,10 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
     
     # Restore RNG states
     rng_state = training_state['rng_state']
-    if not isinstance(rng_state, torch.ByteTensor):
-        rng_state = torch.tensor(rng_state, dtype=torch.uint8)
+    if isinstance(rng_state, torch.Tensor):
+        rng_state = rng_state.detach().to(device='cpu', dtype=torch.uint8)
+    else:
+        rng_state = torch.as_tensor(rng_state, dtype=torch.uint8, device='cpu')
     torch.set_rng_state(rng_state)
     np.random.set_state(training_state['numpy_rng_state'])
     random.setstate(training_state['python_rng_state'])
