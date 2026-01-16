@@ -89,8 +89,9 @@ wandb_project = 'nano-moe'
 wandb_run_name = 'gpt2-124M-owt' + str(time.time())
 
 # data
-# tinystories is too easy. We revert to openwebtext.
-datasets = ['fineweb_edu-50B'] #, 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_edu'
+# To set datasets in the command line, use e.g. --datasets="['fineweb_edu-30b']".
+# Note we need to use double quotes outside and single quotes inside to make it a valid string for the shell.
+datasets = ['fineweb_edu-50B'] #, 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_edu-30B', 'fineweb_edu-50B'
 gradient_accumulation_steps = 2 # used to simulate larger batch sizes
 batch_size = 12     # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024   # Training tokens per sample
@@ -454,7 +455,13 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
     optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
 
     # Load training state
-    training_state = torch.load(os.path.join(resume_from, 'training_state.pt'), map_location=device)
+    # PyTorch 2.6+ defaults weights_only=True; training_state contains non-tensor objects.
+    # Set weights_only=False when loading trusted checkpoints.
+    training_state = torch.load(
+        os.path.join(resume_from, 'training_state.pt'),
+        map_location=device,
+        weights_only=False,
+    )
     optimizer.load_state_dict(training_state['optimizer_state_dict'])
     scaler.load_state_dict(training_state['scaler_state_dict'])
     global_iter = training_state['global_iter']
