@@ -91,7 +91,7 @@ wandb_run_name = 'gpt2-124M-owt' + str(time.time())
 # data
 # tinystories is too easy. We revert to openwebtext.
 datasets = ['fineweb_edu-50B'] #, 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_edu'
-gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
+gradient_accumulation_steps = 2 # used to simulate larger batch sizes
 batch_size = 12     # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024   # Training tokens per sample
 
@@ -402,7 +402,6 @@ if wandb_log and master_process:
 
 # training loop
 t0 = time.time()
-raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 running_tokens_per_sec = -1.0  # EMA of tokens processed per second
 
@@ -446,7 +445,16 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
     # Load model
     model = GPT.from_pretrained(resume_from, trust_remote_code=True)
     model.to(device)
-    
+
+    # Re-apply compile and DDP wrapping after loading the model
+    if compile:
+        model = torch.compile(model)
+    if ddp:
+        model = DDP(model, device_ids=[ddp_local_rank])
+
+    # Recreate optimizer for the loaded model, then load state
+    optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+
     # Load training state
     training_state = torch.load(os.path.join(resume_from, 'training_state.pt'), map_location=device)
     optimizer.load_state_dict(training_state['optimizer_state_dict'])
@@ -464,6 +472,8 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
     if 'cuda_rng_state' in training_state and torch.cuda.is_available():
         torch.cuda.set_rng_state(training_state['cuda_rng_state'])
     print(f"Resumed from epoch {start_epoch}, batch {start_batch_idx}, iter {global_iter}")
+
+raw_model = model.module if ddp else model
 
 for epoch in range(start_epoch, math.ceil(num_epochs)):
     # Recreate sampler with epoch-specific seed for all epochs except the first (already created above)

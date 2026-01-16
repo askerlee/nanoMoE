@@ -10,7 +10,11 @@ __pycache__/
 env/
 venv/
 wandb/
-out/*
-out
 # Character analysis output files
 *_char_analysis.json
+*out0/*
+*out1/*
+*out/*
+*out0
+*out1
+*out
