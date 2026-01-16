@@ -70,6 +70,36 @@ def get_epoch_sampler(dataset, epoch, seed, ddp_world_size=1, ddp_rank=0):
         return torch.utils.data.SubsetRandomSampler(indices)
 
 
+class SkipBatchSampler(torch.utils.data.Sampler):
+    """Wrap a BatchSampler and skip the first N batches without loading data."""
+
+    def __init__(self, batch_sampler, skip_batches=0):
+        self.batch_sampler = batch_sampler
+        self.skip_batches = max(0, int(skip_batches))
+
+    def __iter__(self):
+        for i, batch in enumerate(self.batch_sampler):
+            if i < self.skip_batches:
+                continue
+            yield batch
+
+    def __len__(self):
+        return max(0, len(self.batch_sampler) - self.skip_batches)
+
+
+def build_train_loader(dataset, sampler, batch_size, num_workers, device_type, seed, seed_offset, skip_batches=0):
+    batch_sampler = torch.utils.data.BatchSampler(sampler, batch_size, drop_last=True)
+    if skip_batches:
+        batch_sampler = SkipBatchSampler(batch_sampler, skip_batches)
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_sampler=batch_sampler,
+        num_workers=num_workers,
+        pin_memory=True if device_type == 'cuda' else False,
+        worker_init_fn=lambda worker_id: seed_worker(seed + seed_offset + worker_id)
+    )
+
+
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) with epoch-based training
 # I/O
@@ -242,14 +272,14 @@ combined_train_dataset = torch.utils.data.ConcatDataset(train_datasets)
 # Each batch contains 64*1024 = 64K tokens.
 train_sampler = get_epoch_sampler(combined_train_dataset, epoch=0, seed=seed, 
                                    ddp_world_size=ddp_world_size, ddp_rank=ddp_rank if ddp else 0)
-train_loader = torch.utils.data.DataLoader(
+train_loader = build_train_loader(
     combined_train_dataset,
-    batch_size=batch_size,
-    sampler=train_sampler,  # Use sampler instead of shuffle
-    num_workers=num_workers,
-    pin_memory=True if device_type == 'cuda' else False,
-    drop_last=True,
-    worker_init_fn=lambda worker_id: seed_worker(seed + seed_offset + worker_id)
+    train_sampler,
+    batch_size,
+    num_workers,
+    device_type,
+    seed,
+    seed_offset
 )
 
 combined_val_dataset = torch.utils.data.ConcatDataset(val_datasets)
@@ -491,46 +521,45 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
 raw_model = model.module if ddp else model
 
 for epoch in range(start_epoch, math.ceil(num_epochs)):
+    # If resuming mid-epoch, skip batches
+    skip_batches = start_batch_idx if epoch == start_epoch else 0
+
     # Recreate sampler with epoch-specific seed for all epochs except the first (already created above)
     if epoch != 0:
         train_sampler = get_epoch_sampler(combined_train_dataset, epoch, seed,
                                          ddp_world_size=ddp_world_size, ddp_rank=ddp_rank if ddp else 0)
-        train_loader = torch.utils.data.DataLoader(
-            combined_train_dataset,
-            batch_size=batch_size,
-            sampler=train_sampler,
-            num_workers=num_workers,
-            pin_memory=True if device_type == 'cuda' else False,
-            drop_last=True,
-            worker_init_fn=lambda worker_id: seed_worker(seed + seed_offset + worker_id)
-        )
     else:
         # For epoch 0, just update the existing sampler if using DistributedSampler
         if isinstance(train_sampler, torch.utils.data.distributed.DistributedSampler):
             train_sampler.set_epoch(epoch)
 
+    # Build loader; if resuming mid-epoch, skip in the sampler (no data loading overhead)
+    train_loader = build_train_loader(
+        combined_train_dataset,
+        train_sampler,
+        batch_size,
+        num_workers,
+        device_type,
+        seed,
+        seed_offset,
+        skip_batches=skip_batches
+    )
+
     if master_process:
         print(f"\n=== Epoch {epoch + 1}/{num_epochs} ===")
-    
-    # If resuming mid-epoch, skip batches
-    skip_batches = start_batch_idx if epoch == start_epoch else 0
-    if skip_batches > 0:
-        print(f"Skipping {skip_batches} batches to resume from checkpoint")
-        iterator = iter(train_loader)
-        for _ in range(skip_batches):
-            next(iterator)
-        if master_process:
-            pbar = tqdm(enumerate(iterator, start=skip_batches), 
-                       initial=skip_batches, total=len(train_loader),
-                       desc=f"Epoch {epoch + 1}/{num_epochs}", unit="batch")
-        else:
-            pbar = enumerate(iterator, start=skip_batches)
+        if skip_batches > 0:
+            print(f"Skipping {skip_batches} batches to resume from checkpoint")
+
+    if master_process:
+        pbar = tqdm(
+            enumerate(train_loader, start=skip_batches),
+            initial=skip_batches,
+            total=iters_per_epoch,
+            desc=f"Epoch {epoch + 1}/{num_epochs}",
+            unit="batch",
+        )
     else:
-        if master_process:
-            pbar = tqdm(enumerate(train_loader), total=len(train_loader),
-                       desc=f"Epoch {epoch + 1}/{num_epochs}", unit="batch")
-        else:
-            pbar = enumerate(train_loader)
+        pbar = enumerate(train_loader, start=skip_batches)
         
     for batch_idx, (X, Y) in pbar:
         if global_iter >= total_iters:
