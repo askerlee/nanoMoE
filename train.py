@@ -471,7 +471,10 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
     start_batch_idx = training_state.get('batch_idx', 0)
     
     # Restore RNG states
-    torch.set_rng_state(training_state['rng_state'])
+    rng_state = training_state['rng_state']
+    if not isinstance(rng_state, torch.ByteTensor):
+        rng_state = torch.tensor(rng_state, dtype=torch.uint8)
+    torch.set_rng_state(rng_state)
     np.random.set_state(training_state['numpy_rng_state'])
     random.setstate(training_state['python_rng_state'])
     if 'cuda_rng_state' in training_state and torch.cuda.is_available():
