@@ -90,7 +90,7 @@ wandb_run_name = 'gpt2-124M-owt' + str(time.time())
 
 # data
 # tinystories is too easy. We revert to openwebtext.
-datasets = ['fineweb_30b'] #, 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_30b'
+datasets = ['fineweb_edu-50B'] #, 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_edu'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12     # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024   # Training tokens per sample
@@ -207,10 +207,17 @@ val_datasets = []
 
 for dataset in datasets:
     # data loading
-    data_dir = os.path.join('data', dataset)
+    if "-" in dataset:
+        dataset, dataset_size = dataset.split("-")
+        train_filename = f"train-{dataset_size}.bin"
+        val_filename   = f"val-{dataset_size}.bin"
+    else:
+        train_filename = "train.bin"
+        val_filename   = "val.bin"
 
-    train_bin_path = os.path.join(data_dir, 'train.bin')
-    val_bin_path = os.path.join(data_dir, 'val.bin')
+    data_dir = os.path.join('data', dataset)
+    train_bin_path = os.path.join(data_dir, train_filename)
+    val_bin_path = os.path.join(data_dir, val_filename)
     
     train_dataset = ChunkDataset(train_bin_path, block_size)
     val_dataset = ChunkDataset(val_bin_path, block_size)

@@ -1,15 +1,17 @@
 """
-Revised from:
+Revised from: 
 https://github.com/karpathy/build-nanogpt/blob/master/fineweb.py
 FineWeb-Edu dataset (for srs pretraining)
 https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
-Downloads and tokenizes the data and saves to monolithic .bin files.
-Run simply as:
-$ python prepare.py
-Will save train.bin and val.bin to the same directory as this script.
+Downloads and tokenizes the data and saves to monolithic . bin files. 
+Run with custom size (in billions of tokens):
+$ python prepare.py --size 30
+$ python prepare.py --size 100
+Will save train-{size}B.bin and val-{size}B.bin to the same directory as this script.
 """
 
 import os
+import argparse
 import numpy as np
 import tiktoken
 from datasets import load_dataset
@@ -17,8 +19,6 @@ from tqdm import tqdm
 
 # ------------------------------------------
 remote_name = "sample-100BT"
-# Target number of tokens (30B)
-target_tokens = 30_000_000_000
 
 # create the cache the local directory if it doesn't exist yet
 DATA_CACHE_DIR = os.path.dirname(__file__)
@@ -26,9 +26,17 @@ DATA_CACHE_DIR = os.path.dirname(__file__)
 # init the tokenizer
 enc = tiktoken.get_encoding("gpt2")
 
-if __name__ == '__main__':
-    # Stream the dataset and write directly to disk to avoid loading 30B tokens in RAM
-    print(f"Streaming dataset to collect ~{target_tokens:,} tokens...")
+if __name__ == '__main__': 
+    parser = argparse.ArgumentParser(description='Prepare FineWeb-Edu dataset with custom token count')
+    parser.add_argument('--size', type=int, default=30, 
+                        help='Target number of tokens in billions (default: 30)')
+    args = parser.parse_args()
+    
+    # Target number of tokens
+    target_tokens = args.size * 1_000_000_000
+    
+    # Stream the dataset and write directly to disk to avoid loading tokens in RAM
+    print(f"Streaming dataset to collect ~{target_tokens:,} tokens ({args.size}B)...")
     dataset = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train", streaming=True)
     
     # init the tokenizer
@@ -74,32 +82,33 @@ if __name__ == '__main__':
         f.truncate(total_tokens * np.dtype(dtype).itemsize)
     
     arr = np.memmap(temp_file, dtype=dtype, mode='r', shape=(total_tokens,))
-    print(f"Collected {total_tokens:,} tokens")
+    print(f"Collected {total_tokens: ,} tokens")
     
     # Create train/val split
     val_size = int(total_tokens * 0.0005)
     train_size = total_tokens - val_size
     
-    print(f"Creating train/val split ({train_size:,} train, {val_size:,} val)...")
+    print(f"Creating train/val split ({train_size:,} train, {val_size: ,} val)...")
     
     # Write val file first (copy the tail)
-    val_file = os.path.join(DATA_CACHE_DIR, 'val.bin')
+    val_file = os.path.join(DATA_CACHE_DIR, f'val-{args.size}B.bin')
     val_arr = np.memmap(val_file, dtype=dtype, mode='w+', shape=(val_size,))
     
-    print("Writing val.bin...")
+    print(f"Writing val-{args.size}B.bin...")
     batch_size = 10_000_000
     for i in tqdm(range(0, val_size, batch_size)):
         end = min(i + batch_size, val_size)
         val_arr[i:end] = arr[train_size + i:train_size + end]
-    val_arr.flush()
+    val_arr. flush()
     del val_arr
     
     # Truncate temp file to train size and rename it
-    print("Creating train.bin...")
+    print(f"Creating train-{args. size}B.bin...")
     del arr
-    train_file = os.path.join(DATA_CACHE_DIR, 'train.bin')
+    train_file = os.path.join(DATA_CACHE_DIR, f'train-{args.size}B. bin')
     with open(temp_file, 'r+b') as f:
         f.truncate(train_size * np.dtype(dtype).itemsize)
     os.rename(temp_file, train_file)
 
-    print(f"Done! train.bin: {train_size:,} tokens, val.bin: {val_size:,} tokens")
+    print(f"Done! train-{args.size}B.bin: {train_size:,} tokens, val-{args.size}B.bin: {val_size:,} tokens")
+    
