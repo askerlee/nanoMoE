@@ -500,14 +500,18 @@ class MOELayer(nn.Module):
             ortho_loss = (ortho_losses * ortho_losses_weights).sum()
             return ortho_loss
 
-    def compute_gate_diversity_loss(self, calc_scheme='rand_estimate', num_rand_probes=4):
+    def compute_gate_diversity_loss(self, use_rand_estimate=True, num_rand_probes=2):
         # G: [n_exp, n_embd, intermediate_size]
         G = self.experts.gate_proj
         # Row-normalize: normalize each row vector over intermediate_size
         G = G / (G.norm(dim=2, keepdim=True) + 1e-12)
         E, D, F = G.size()  # n_exp, n_embd, intermediate_size
 
-        if calc_scheme == 'rand_estimate':
+        if use_rand_estimate:
+            # Stochastic Hutchinson trace/Frobenius estimator.
+            # 2 probs are not accurate, but slightly faster than the exact method.
+            # On the long term, it can still provide useful signal 
+            # to improve diversity and suppress collapse.
             K = num_rand_probes
             # Z: [E, D, K]  (±1)
             Z = torch.empty((E, D, K), device=G.device, dtype=torch.int8).random_(2)
