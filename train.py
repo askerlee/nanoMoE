@@ -109,6 +109,9 @@ eval_only = False # if True, script exits right after the first eval
 save_ckpt_every_n_evals = 50 # if -1, never save checkpoints
 # if True, always save a checkpoint after each eval, no matter whether the val loss is optimal.
 save_ckpt_regardless_loss = True 
+# Whether to save optimizer and scaler state along with model.
+# Useful on slurm clusters where jobs have a short time limit and need to be resumed often.
+save_training_state = True  
 ckpt_prefix = "nanomoe"
 init_from = 'scratch' # 'scratch' or 'gpt2*'
 seed = 1337
@@ -612,23 +615,24 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                         shutil.copy(src, dst)
                 print(f"copied model files for trust_remote_code loading")
                 
-                # Add to training state
-                training_state = {
-                    'global_iter': global_iter,
-                    'eval_count': eval_count,
-                    'best_val_loss': best_val_loss,
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scaler_state_dict': scaler.state_dict(),
-                    'config': config,
-                    'model_args': model_args,
-                    'epoch': epoch,
-                    'batch_idx': batch_idx,  # track position within epoch
-                    'rng_state': torch.get_rng_state(),  # PyTorch RNG state
-                    'numpy_rng_state': np.random.get_state(),  # NumPy RNG state
-                    'python_rng_state': random.getstate(),  # Python RNG state
-                    'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
-                }
-                torch.save(training_state, os.path.join(ckpt_dir, 'training_state.pt'))
+                if save_training_state:
+                    # Add to training state
+                    training_state = {
+                        'global_iter': global_iter,
+                        'eval_count': eval_count,
+                        'best_val_loss': best_val_loss,
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scaler_state_dict': scaler.state_dict(),
+                        'config': config,
+                        'model_args': model_args,
+                        'epoch': epoch,
+                        'batch_idx': batch_idx,  # track position within epoch
+                        'rng_state': torch.get_rng_state(),  # PyTorch RNG state
+                        'numpy_rng_state': np.random.get_state(),  # NumPy RNG state
+                        'python_rng_state': random.getstate(),  # Python RNG state
+                        'cuda_rng_state': torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                    }
+                    torch.save(training_state, os.path.join(ckpt_dir, 'training_state.pt'))
 
         if eval_only and epoch == 0 and batch_idx == 0:
             # Run one evaluation then exit
