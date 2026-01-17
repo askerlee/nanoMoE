@@ -501,11 +501,18 @@ class MOELayer(nn.Module):
             return ortho_loss
 
     def compute_gate_diversity_loss(self):
-        n_embd = self.experts.gate_proj.shape[1]
+        n_embd            = self.experts.gate_proj.shape[1]
+        intermediate_size = self.experts.gate_proj.shape[2]
 
-        # gate_proj: [n_exp, n_embd, intermediate_size]
+        # Randomly project intermediate_size=2048 to intermediate_size/16=128 to reduce computation.
+        rand_proj = torch.randn(intermediate_size, intermediate_size // 16, 
+                                device=self.experts.gate_proj.device)
+        # gate_proj: [n_exp, n_embd, intermediate_size] -> [n_exp, n_embd, intermediate_size/16].
+        # The cosine within the projected space still encourages the rows to be dissimilar.
+        gate_proj = torch.matmul(self.experts.gate_proj, rand_proj)  
+
         # Row-normalize: normalize each row vector over intermediate_size
-        G = self.experts.gate_proj / (self.experts.gate_proj.norm(dim=2, keepdim=True) + 1e-12)
+        G = gate_proj / (gate_proj.norm(dim=2, keepdim=True) + 1e-12)
 
         # Batched Gram: [n_exp, n_embd, n_embd]
         # This computes cosine similarity between all pairs of row vectors of 
