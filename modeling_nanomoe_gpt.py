@@ -500,32 +500,37 @@ class MOELayer(nn.Module):
             ortho_loss = (ortho_losses * ortho_losses_weights).sum()
             return ortho_loss
 
-    def compute_gate_diversity_loss(self):
-        n_embd            = self.experts.gate_proj.shape[1]
-        intermediate_size = self.experts.gate_proj.shape[2]
-
-        # Randomly project intermediate_size=2048 to intermediate_size/16=128 to reduce computation.
-        rand_proj = torch.randn(intermediate_size, intermediate_size // 16, 
-                                device=self.experts.gate_proj.device)
-        # gate_proj: [n_exp, n_embd, intermediate_size] -> [n_exp, n_embd, intermediate_size/16].
-        # The cosine within the projected space still encourages the rows to be dissimilar.
-        gate_proj = torch.matmul(self.experts.gate_proj, rand_proj)  
-
+    def compute_gate_diversity_loss(self, calc_scheme='rand_estimate', num_rand_probes=16):
+        # G: [n_exp, n_embd, intermediate_size]
+        G = self.experts.gate_proj
         # Row-normalize: normalize each row vector over intermediate_size
-        G = gate_proj / (gate_proj.norm(dim=2, keepdim=True) + 1e-12)
+        G = G / (G.norm(dim=2, keepdim=True) + 1e-12)
+        E, D, F = G.size()  # n_exp, n_embd, intermediate_size
 
-        # Batched Gram: [n_exp, n_embd, n_embd]
-        # This computes cosine similarity between all pairs of row vectors of 
-        # each expert's gate projection matrix.
-        gram = torch.bmm(G, G.transpose(1, 2))
+        if calc_scheme == 'rand_estimate':
+            est_frob2 = torch.zeros(E, device=G.device, dtype=G.dtype)
+            for _ in range(num_rand_probes):
+                z = (torch.randint(0, 2, (E, D, 1), device=G.device) * 2 - 1).to(G.dtype)  # [E,D,1]
+                gt_z = torch.bmm(G.transpose(1, 2), z)   # [E,F,1]
+                Az   = torch.bmm(G, gt_z) - z            # [E,D,1]
+                est_frob2 += Az.squeeze(-1).square().sum(dim=1)  # [E]
 
-        # Zero out diagonal without materializing eye per expert
-        gram = gram - torch.diag_embed(torch.diagonal(gram, dim1=-2, dim2=-1))
+            est_frob2 /= num_rand_probes
 
-        # Mean squared off-diagonal similarity per expert
-        # Off-diagonal count = n_embd * n_embd - n_embd
-        offdiag_sq_sum = gram.square().sum(dim=(1, 2))                      # [n_exp]
-        row_sim_per_expert = offdiag_sq_sum / (n_embd * n_embd - n_embd)    # [n_exp]
+            # Mean over D*(D-1) off-diagonal entries.
+            row_sim_per_expert = est_frob2 / (D * D - D)
+        else:
+            # Batched Gram: [n_exp, n_embd, n_embd]
+            # This computes cosine similarity between all pairs of row vectors of 
+            # each expert's gate projection matrix.
+            gram = torch.bmm(G, G.transpose(1, 2))
+            # Zero out diagonal without materializing eye per expert
+            gram = gram - torch.diag_embed(torch.diagonal(gram, dim1=-2, dim2=-1))
+
+            # Mean squared off-diagonal similarity per expert
+            # Off-diagonal count = n_embd * n_embd - n_embd
+            offdiag_sq_sum = gram.square().sum(dim=(1, 2))       # [n_exp]
+            row_sim_per_expert = offdiag_sq_sum / (D * D - D)    # [n_exp]
 
         return row_sim_per_expert.mean()
         

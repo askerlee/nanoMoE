@@ -89,6 +89,8 @@ dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported
 compile = True # use PyTorch 2.0 to compile the model to be faster
 # NOTE: Always override 'resume_from' in the command line or config file to load a checkpoint for eigenvalue analysis.
 resume_from = None  # Override to resume from a checkpoint directory.
+# Calculation scheme
+calc_scheme = 'rand_estimate' # loop, batch, rand_estimate
 
 # profiling
 use_profiler = False # enable PyTorch profiler
@@ -105,7 +107,7 @@ config_keys = [k for k in config_keys if k not in ['max_iters', 'lr_decay_iters'
 # otherwise if it's a --key=value argument, override the corresponding key in globals().
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys}  # will be useful for logging
-print(config)
+#print(config)
 # -----------------------------------------------------------------------------
 
 assert resume_from is not None, "Please specify a checkpoint to load using the 'resume_from' variable."
@@ -129,9 +131,9 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   use_switch_tfm_init=use_switch_tfm_init, switch_tfm_init_scale=switch_tfm_init_scale,
                   router_use_full_prec=router_use_full_prec,
                   use_qwen3_moe_mlp=use_qwen3_moe_mlp) # start with model_args from command line
-print('\n\n')
-print(model_args)
-print('\n\n')
+#print('\n\n')
+#print(model_args)
+#print('\n\n')
 # Load model
 model = GPT.from_pretrained(resume_from, trust_remote_code=True)
 model.to(device)
@@ -144,6 +146,8 @@ resume_from = resume_from.rstrip('/').rstrip('\\')
 ckpt_filename = os.path.basename(resume_from)
 print(f"Model {ckpt_filename}:")
 
+num_rand_probes = 16
+
 for layer, block in enumerate(model.transformer.h):
     if not isinstance(block.mlp, MOELayer):
         #print(f"Block {layer} is not a MOELayer, skipping...")
@@ -151,27 +155,56 @@ for layer, block in enumerate(model.transformer.h):
     moe_layer = block.mlp
     assert isinstance(moe_layer.experts, Qwen3MLPExperts), "Expected Qwen3MLPExperts"
     experts = moe_layer.experts
-    # gate_projs: [n_exp, n_embd, intermediate_size]
-    gate_projs = experts.gate_proj
-    row_sims = []
+    # G: [n_exp, n_embd, intermediate_size]
+    G = experts.gate_proj
+    # Row-normalize: normalize each row vector over intermediate_size
+    G = G / (G.norm(dim=2, keepdim=True) + 1e-12)
+    E, D, F = G.size()  # n_exp, n_embd, intermediate_size
 
-    for i in range(experts.n_exp):
-        gate_proj = gate_projs[i]  # [n_embd, intermediate_size]
-        G = gate_proj
-        eps = 1e-12
-        G = G / (G.norm(dim=1, keepdim=True) + eps)   # row-normalize
-        gram = G @ G.T
-        offdiag = gram - torch.eye(gram.size(0), device=gram.device)
-        row_sim = offdiag.square().mean()
-        row_sims.append(row_sim.item())
-    
-    row_sims_tensor = torch.tensor(row_sims)
-    row_sim_mean = row_sims_tensor.mean().item()
-    row_sim_std = row_sims_tensor.std().item()
+    if calc_scheme == 'rand_estimate':
+        est_frob2 = torch.zeros(E, device=G.device, dtype=G.dtype)
+        for _ in range(num_rand_probes):
+            z = (torch.randint(0, 2, (E, D, 1), device=G.device) * 2 - 1).to(G.dtype)  # [E,D,1]
+            gt_z = torch.bmm(G.transpose(1, 2), z)   # [E,F,1]
+            Az   = torch.bmm(G, gt_z) - z            # [E,D,1]
+            est_frob2 += Az.squeeze(-1).square().sum(dim=1)  # [E]
+
+        est_frob2 /= num_rand_probes
+
+        # Match offdiag.square().mean() (mean over D*D entries)
+        row_sim_per_expert = est_frob2 / (D * D - D)
+
+    elif calc_scheme == 'batch':
+        # Batched Gram: [n_exp, n_embd, n_embd]
+        # This computes cosine similarity between all pairs of row vectors of 
+        # each expert's gate projection matrix.
+        gram = torch.bmm(G, G.transpose(1, 2))
+        # Zero out diagonal without materializing eye per expert
+        gram = gram - torch.diag_embed(torch.diagonal(gram, dim1=-2, dim2=-1))
+        # Mean squared off-diagonal similarity per expert
+        # Off-diagonal count = n_embd * n_embd - n_embd
+        offdiag_sq_sum = gram.square().sum(dim=(1, 2))      # [n_exp]
+        row_sim_per_expert = offdiag_sq_sum / (D * D - D)   # [n_exp]
+    else:
+        # Loop over experts
+        row_sim_per_expert = []
+
+        for i in range(experts.n_exp):
+            Gi = G[i]  # [n_embd, intermediate_size]
+            eps = 1e-12
+            gram = Gi @ Gi.T
+            offdiag = gram - torch.eye(gram.size(0), device=gram.device)
+            row_sim = offdiag.square().sum() / (D * D - D)
+            row_sim_per_expert.append(row_sim.item())
+        
+        row_sim_per_expert = torch.tensor(row_sim_per_expert, device=G.device)
+
+    row_sim_mean = row_sim_per_expert.mean().item()
+    row_sim_std = row_sim_per_expert.std().item()
     row_sim_means.append(row_sim_mean)
     row_sim_stds.append(row_sim_std)
     # Compute the stats of top 5 highest row similarities for this layer
-    top5_row_sims, _ = torch.topk(row_sims_tensor, 5)
+    top5_row_sims, _ = torch.topk(row_sim_per_expert, 5)
     top5_row_sim_mean = top5_row_sims.mean().item()
     top5_row_sim_std = top5_row_sims.std().item()
     print(f"Layer {layer}: Row sim mean = {row_sim_mean:.6f}, std = {row_sim_std:.6f}. Top 5 mean = {top5_row_sim_mean:.6f}, std = {top5_row_sim_std:.6f}")
