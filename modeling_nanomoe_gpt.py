@@ -493,7 +493,7 @@ class MOELayer(nn.Module):
             # But experiments seem to suggest that it's better to penalize negative correlations equally.
             ortho_losses_weights[ortho_losses < 0] = self.router_ortho_neg_corr_weight       
             # Square the dot products to penalize both positive and negative correlations
-            ortho_losses = ortho_losses ** 2
+            ortho_losses = ortho_losses.square()
             # Change mean to sum, otherwise the loss is too small to have effect.
             # sum() is n_exp * intermediate_size times larger than mean()
             # n_exp = 128, intermediate_size = 2048, so the loss is 262144 times larger!!
