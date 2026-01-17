@@ -419,6 +419,9 @@ class MOELayer(nn.Module):
         if self.training and self.use_router_ortho_loss:
             router_ortho_loss = self.compute_router_ortho_loss()
             MANAGER.add_router_ortho_loss(router_ortho_loss)
+            # Always use gate diversity loss when using router orthogonality loss.
+            gate_diversity_loss = self.compute_gate_diversity_loss()
+            MANAGER.add_gate_diversity_loss(gate_diversity_loss)
 
         if self.training and self.use_experts_ortho_loss:
             experts_ortho_loss = self.compute_experts_ortho_loss()
@@ -486,7 +489,8 @@ class MOELayer(nn.Module):
             # ortho_losses: [n_exp, intermediate_size]
             ortho_losses = (router_weights * gate_proj_weights).sum(dim=1)
             ortho_losses_weights = torch.ones_like(ortho_losses)
-            # downweight or ignore negative correlations
+            # Negative correlations could be downweighted by setting router_ortho_neg_corr_weight < 1.
+            # But experiments seem to suggest that it's better to penalize negative correlations equally.
             ortho_losses_weights[ortho_losses < 0] = self.router_ortho_neg_corr_weight       
             # Square the dot products to penalize both positive and negative correlations
             ortho_losses = ortho_losses ** 2
@@ -496,6 +500,28 @@ class MOELayer(nn.Module):
             ortho_loss = (ortho_losses * ortho_losses_weights).sum()
             return ortho_loss
 
+    def compute_gate_diversity_loss(self):
+        n_embd = self.experts.gate_proj.shape[1]
+
+        # gate_proj: [n_exp, n_embd, intermediate_size]
+        # Row-normalize: normalize each row vector over intermediate_size
+        G = self.experts.gate_proj / (self.experts.gate_proj.norm(dim=2, keepdim=True) + 1e-12)
+
+        # Batched Gram: [n_exp, n_embd, n_embd]
+        # This computes cosine similarity between all pairs of row vectors of 
+        # each expert's gate projection matrix.
+        gram = torch.bmm(G, G.transpose(1, 2))
+
+        # Zero out diagonal without materializing eye per expert
+        gram = gram - torch.diag_embed(torch.diagonal(gram, dim1=-2, dim2=-1))
+
+        # Mean squared off-diagonal similarity per expert
+        # Off-diagonal count = n_embd * n_embd - n_embd
+        offdiag_sq_sum = gram.square().sum(dim=(1, 2))                      # [n_exp]
+        row_sim_per_expert = offdiag_sq_sum / (n_embd * n_embd - n_embd)    # [n_exp]
+
+        return row_sim_per_expert.mean()
+        
     # Compute orthogonality loss between expert weight matrices.
     # This is an ablation study of arXiv:2601.00457.
     def compute_experts_ortho_loss(self):
@@ -722,7 +748,8 @@ class GPT(PreTrainedModel, GenerationMixin):
                    'router_z_loss': 0,
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0, 
-                   'gate_output_loss': 0
+                   'gate_output_loss': 0,
+                   'gate_diversity_loss': 0
                  }
 
         # Always compute logits for all positions (HuggingFace standard)
@@ -749,6 +776,10 @@ class GPT(PreTrainedModel, GenerationMixin):
                 loss += self.config.router_ortho_loss_weight * router_ortho_loss 
                 losses['router_ortho_loss'] = router_ortho_loss.item() if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
                 MANAGER.reset_router_ortho_loss()
+                gate_diversity_loss = MANAGER.aggregate_gate_diversity_loss()
+                loss += self.config.gate_diversity_loss_weight * gate_diversity_loss
+                losses['gate_diversity_loss'] = gate_diversity_loss.item() if isinstance(gate_diversity_loss, torch.Tensor) else gate_diversity_loss
+                MANAGER.reset_gate_diversity_loss()
             if self.config.n_exp > 1 and self.config.use_experts_ortho_loss:
                 experts_ortho_loss = MANAGER.aggregate_experts_ortho_loss()
                 loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
@@ -786,68 +817,6 @@ class GPT(PreTrainedModel, GenerationMixin):
         for block in self.transformer.h:
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
-
-    @classmethod
-    def from_pretrained_gpt2(cls, model_type, override_args=None):
-        """
-        Load weights from official GPT-2 checkpoints.
-        This is a legacy method kept for backward compatibility.
-        For HuggingFace compatibility, use AutoModelForCausalLM.from_pretrained() instead.
-        """
-        assert not 'moe' in model_type, "Pretrained checkpoints not available for MoE"
-        assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
-        override_args = override_args or {} # default to empty dict
-        # no overrides supported for pretrained models
-        assert len(override_args) == 0
-        from transformers import GPT2LMHeadModel
-        print("loading weights from pretrained gpt: %s" % model_type)
-
-        # n_layer, n_head and n_embd are determined from model_type
-        config_args = {
-            'gpt2':         dict(n_layer=12, n_head=12, n_embd=768),  # 124M params
-            'gpt2-medium':  dict(n_layer=24, n_head=16, n_embd=1024), # 350M params
-            'gpt2-large':   dict(n_layer=36, n_head=20, n_embd=1280), # 774M params
-            'gpt2-xl':      dict(n_layer=48, n_head=25, n_embd=1600), # 1558M params
-        }[model_type]
-        print("forcing vocab_size=50257, block_size=1024, bias=True")
-        config_args['vocab_size'] = 50257 # always 50257 for GPT model checkpoints
-        config_args['block_size'] = 1024 # always 1024 for GPT model checkpoints
-        config_args['bias'] = True # always True for GPT model checkpoints
-        # no overrides supported for pretrained models
-        # create a from-scratch initialized minGPT model
-        config = GPTConfig(**config_args)
-        model = GPT(config)
-        sd = model.state_dict()
-        sd_keys = sd.keys()
-        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask / buffer, not a param
-
-        # init a huggingface/transformers model
-        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
-        sd_hf = model_hf.state_dict()
-
-        # copy while ensuring all of the parameters are aligned and match in names and shapes
-        sd_keys_hf = sd_hf.keys()
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')] # ignore these, just a buffer
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')] # same, just the mask (buffer)
-        # This is loading the weights of the same params from pretrained GPT-2 models.
-        # Therefore, the newly added gate_proj in Qwen3MLP and Qwen3MLPExperts is not present here.
-        transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
-        # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
-        # this means that we have to transpose these weights when we import them
-        assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
-        for k in sd_keys_hf:
-            if any(k.endswith(w) for w in transposed):
-                # special treatment for the Conv1D weights we need to transpose
-                assert sd_hf[k].shape[::-1] == sd[k].shape
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k].t())
-            else:
-                # vanilla copy over the other parameters
-                assert sd_hf[k].shape == sd[k].shape
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k])
-
-        return model
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         # TODO: add expert config

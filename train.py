@@ -113,7 +113,6 @@ save_ckpt_regardless_loss = True
 # Useful on slurm clusters where jobs have a short time limit and need to be resumed often.
 save_training_state = True  
 ckpt_prefix = "nanomoe"
-init_from = 'scratch' # 'scratch' or 'gpt2*'
 seed = 1337
 
 # wandb logging
@@ -151,7 +150,8 @@ router_ortho_neg_corr_weight = 1  # weight for negative correlations in router-o
 # experts_ortho_loss is very small due to squared cosine similarities.
 # So its weight is set higher to have a meaningful effect.
 experts_ortho_loss_weight = 0.01  
-gate_output_loss_weight = 0.01
+gate_output_loss_weight = 0.0001
+gate_diversity_loss_weight = 0.01
 train_capacity = 1.25
 eval_capacity = 3.0
 min_capacity = 4
@@ -341,6 +341,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   router_ortho_neg_corr_weight=router_ortho_neg_corr_weight,
                   experts_ortho_loss_weight=experts_ortho_loss_weight,
                   gate_output_loss_weight=gate_output_loss_weight,
+                  gate_diversity_loss_weight=gate_diversity_loss_weight,
                   train_capacity=train_capacity,
                   eval_capacity=eval_capacity, min_capacity=min_capacity, 
                   stride=stride, moe_start_layer=moe_start_layer,
@@ -350,22 +351,11 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
 print('\n\n')
 print(model_args)
 print('\n\n')
-if init_from == 'scratch':
-    # init a new model from scratch
-    print("Initializing a new model from scratch")
-    # determine the vocab size we'll use for from-scratch training
-    print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
-    model_args['vocab_size'] = 50304
-    gptconf = GPTConfig(**model_args)
-    model = GPT(gptconf)
-elif init_from.startswith('gpt2'):
-    print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
-    # initialize from OpenAI GPT-2 weights
-    override_args = dict()
-    model = GPT.from_pretrained(init_from, override_args)
-    # read off the created config params, so we can store them into checkpoint correctly
-    for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size']:
-        model_args[k] = getattr(model.config, k)
+# determine the vocab size we'll use for from-scratch training
+print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
+model_args['vocab_size'] = 50304
+gptconf = GPTConfig(**model_args)
+model = GPT(gptconf)
 # crop down the model block size if desired, using model surgery
 if block_size < model.config.block_size:
     model.crop_block_size(block_size)
@@ -706,6 +696,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     "train/router_ortho_loss_step": losses['router_ortho_loss'],
                     "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
                     "train/gate_output_loss_step": losses['gate_output_loss'],
+                    "train/gate_diversity_loss_step": losses['gate_diversity_loss'],
                     "lr": lr,
                     "mfu": running_mfu*100,
                     "tok_per_sec": running_tokens_per_sec,

@@ -32,7 +32,8 @@ class GPTConfig(PretrainedConfig):
         # experts_ortho_loss is very small due to squared cosine similarities.
         # So its weight is set higher to have a meaningful effect.
         experts_ortho_loss_weight: float = 0.01,
-        gate_output_loss_weight: float = 0.01,  # default weight for gate output regularization loss
+        gate_output_loss_weight: float = 0.0001,  # default weight for gate output regularization loss
+        gate_diversity_loss_weight: float = 0.01,  # default weight for gate diversity loss
         train_capacity: float = 1.25,   # default setting from ST-MoE (see top of page 6)
         eval_capacity: float = 3.0,     # 3.0 leads slightly better performance than 2.0 on CORE.
         min_capacity: int = 4,  # minimum batch size to send to any single expert
@@ -73,6 +74,7 @@ class GPTConfig(PretrainedConfig):
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
         self.experts_ortho_loss_weight = experts_ortho_loss_weight
         self.gate_output_loss_weight = gate_output_loss_weight
+        self.gate_diversity_loss_weight = gate_diversity_loss_weight
         self.train_capacity = train_capacity
         self.eval_capacity = eval_capacity
         self.min_capacity = min_capacity

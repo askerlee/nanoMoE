@@ -36,6 +36,7 @@ router_ortho_neg_corr_weight = 1
 # So its weight is set higher to have a meaningful effect.
 experts_ortho_loss_weight = 0.01
 gate_output_loss_weight = 0.0001
+gate_diversity_loss_weight = 0.01
 
 use_noisy_top_k = False
 # Intentionally use a small capacity to show the advantage of the router ortho loss.
