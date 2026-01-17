@@ -500,7 +500,7 @@ class MOELayer(nn.Module):
             ortho_loss = (ortho_losses * ortho_losses_weights).sum()
             return ortho_loss
 
-    def compute_gate_diversity_loss(self, calc_scheme='rand_estimate', num_rand_probes=16):
+    def compute_gate_diversity_loss(self, calc_scheme='rand_estimate', num_rand_probes=4):
         # G: [n_exp, n_embd, intermediate_size]
         G = self.experts.gate_proj
         # Row-normalize: normalize each row vector over intermediate_size
@@ -508,16 +508,16 @@ class MOELayer(nn.Module):
         E, D, F = G.size()  # n_exp, n_embd, intermediate_size
 
         if calc_scheme == 'rand_estimate':
-            est_frob2 = torch.zeros(E, device=G.device, dtype=G.dtype)
-            for _ in range(num_rand_probes):
-                z = (torch.randint(0, 2, (E, D, 1), device=G.device) * 2 - 1).to(G.dtype)  # [E,D,1]
-                gt_z = torch.bmm(G.transpose(1, 2), z)   # [E,F,1]
-                Az   = torch.bmm(G, gt_z) - z            # [E,D,1]
-                est_frob2 += Az.squeeze(-1).square().sum(dim=1)  # [E]
-
-            est_frob2 /= num_rand_probes
-
-            # Mean over D*(D-1) off-diagonal entries.
+            K = num_rand_probes
+            # Z: [E, D, K]  (±1)
+            Z = torch.empty((E, D, K), device=G.device, dtype=torch.int8).random_(2)
+            Z = (Z * 2 - 1).to(G.dtype)
+            # gt_z = G^T Z: [E, F, K]
+            gt_z = torch.bmm(G.transpose(1, 2), Z)
+            # Ggt_z = G gt_z: [E, D, K]
+            Ggt_z = torch.bmm(G, gt_z)
+            Az = Ggt_z - Z
+            est_frob2 = Az.square().sum(dim=1).mean(dim=1)  # [E]  sum over D, mean over K
             row_sim_per_expert = est_frob2 / (D * D - D)
         else:
             # Batched Gram: [n_exp, n_embd, n_embd]
