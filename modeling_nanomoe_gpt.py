@@ -23,6 +23,12 @@ try:
 except ImportError:
     from configuration_nanomoe_gpt import GPTConfig
 
+from functools import partial
+from dataclasses import dataclass
+import inspect
+from nanochat.common import get_dist_info
+from nanochat.muon import Muon, DistMuon
+from nanochat.adamw import DistAdamW
 
 # Revised from RevGrad, by removing the grad negation.
 class ScaleGrad(torch.autograd.Function):
@@ -861,6 +867,46 @@ class GPT(PreTrainedModel, GenerationMixin):
         print(f"using fused AdamW: {use_fused}")
 
         return optimizer
+
+    # TODO: integrate setup_optimizers() from nanochat, and remove the above configure_optimizers.
+    # It create optim groups. Any parameters that is 2D will be in Muon and weight decayed, otherwise no.
+    # i.e. all weight tensors in matmuls decay, and all embeddings, biases and layernorms don't.
+    # In the original nanoMoE code, embeddings are decayed which is not a good practice.
+    # Otherwise, this is the same as nanoMoE's setup_optimizers().
+    # add an extra check for "bias" string to account for bias terms in MoE layers
+    def setup_optimizers(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.8, 0.95), scalar_lr=0.5):
+        model_dim = self.config.n_embd
+        ddp, rank, local_rank, world_size = get_dist_info()
+        # Separate out all parameters into 4 groups (matrix, embedding, ln_f, position_embedding)
+        matrix_params = list(self.transformer.h.parameters())
+        embedding_params = list(self.transformer.wte.parameters())
+        position_embedding_params = list(self.transformer.wpe.parameters())
+        # Don't include lm_head_params here, as those are tied with embedding_params.
+        ln_f_params = list(self.transformer.ln_f.parameters())
+        assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) \
+                        + len(position_embedding_params) + len(ln_f_params)
+        # Create the AdamW optimizer for the embedding, ln_f, and per-layer scalars
+        # Scale the LR for the AdamW parameters by ∝1/√dmodel (having tuned the LRs for 768 dim model)
+        dmodel_lr_scale = (model_dim / 768) ** -0.5
+        print(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {dmodel_lr_scale:.6f}")
+        adam_groups = [
+            dict(params=embedding_params, lr=embedding_lr * dmodel_lr_scale),
+            dict(params=position_embedding_params, lr=embedding_lr * dmodel_lr_scale),
+            dict(params=ln_f_params, lr=embedding_lr * dmodel_lr_scale),
+        ]
+        adamw_kwargs = dict(betas=adam_betas, eps=1e-10, weight_decay=0.0) # NOTE: weight decay is hardcoded to 0.0 for AdamW, only used in Muon
+        AdamWFactory = DistAdamW if ddp else partial(torch.optim.AdamW, fused=True)
+        adamw_optimizer = AdamWFactory(adam_groups, **adamw_kwargs)
+        # Create the Muon optimizer for the linear layers
+        muon_kwargs = dict(lr=matrix_lr, momentum=0.95, weight_decay=weight_decay)
+        MuonFactory = DistMuon if ddp else Muon
+        muon_optimizer = MuonFactory(matrix_params, **muon_kwargs)
+        # Combine them the two optimizers into one list
+        optimizers = [adamw_optimizer, muon_optimizer]
+        for opt in optimizers:
+            for group in opt.param_groups:
+                group["initial_lr"] = group["lr"]
+        return optimizers
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
         """ estimate model flops utilization (MFU) in units of GPU bfloat16 -> fp32 accum peak FLOPS """

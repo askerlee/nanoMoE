@@ -1,148 +1,24 @@
 import os
 import time
 import torch
-from modeling_nanomoe_gpt import GPTConfig, GPT, MOELayer, Qwen3MLPExperts
+import argparse
+from transformers import AutoModelForCausalLM
+from modeling_nanomoe_gpt import MOELayer, Qwen3MLPExperts
 
-# -----------------------------------------------------------------------------
-# default config values designed to train a gpt2 (124M) with epoch-based training
-# I/O
-out_dir = 'out'
-log_interval = 25
-eval_only = False # if True, script exits right after the first eval
-save_ckpt_every_n_evals = 50 # if -1, never save checkpoints
-# if True, always save a checkpoint after each eval, no matter whether the val loss is optimal.
-save_ckpt_regardless_loss = True 
-# Whether to save optimizer and scaler state along with model.
-# Useful on slurm clusters where jobs have a short time limit and need to be resumed often.
-save_training_state = True  
-ckpt_prefix = "nanomoe"
-seed = 1337
+parser = argparse.ArgumentParser()
+parser.add_argument("--resume_from", type=str, required=True, help="Path to the checkpoint directory to resume from")
+parser.add_argument("--calc_scheme", type=str, default="batch", choices=["loop", "batch", "rand_estimate"],
+                    help="Scheme to calculate row similarity: 'loop' for per-expert loop, 'batch' for batched Gram, "
+                         "'rand_estimate' for randomized estimation")
+parser.add_argument("--verbose", action='store_true', help="Whether to print detailed parameter states")
+args = parser.parse_args()
 
-# wandb logging
-wandb_log = True # False # disabled by default
-wandb_project = 'nano-moe'
-wandb_run_name = 'gpt2-124M-owt' + str(time.time())
-
-# data
-# To set datasets in the command line, use e.g. --datasets="['fineweb_edu-30b']".
-# Note we need to use double quotes outside and single quotes inside to make it a valid string for the shell.
-datasets = ['fineweb_edu-50B'] #, 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_edu-30B', 'fineweb_edu-50B'
-gradient_accumulation_steps = 2 # used to simulate larger batch sizes
-batch_size = 12     # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 1024   # Training tokens per sample
-
-# model
-n_layer = 12
-n_head = 12
-n_embd = 768
-bias = False # do we use bias inside LayerNorm and Linear layers?
-
-# moe
-n_exp = 1 # if n_exp = 1 we just use regular MLP layers
-moe_top_k = 2
-use_aux_loss = False
-use_router_z_loss = False
-use_router_ortho_loss = False
-use_experts_ortho_loss = False
-use_gate_output_loss = False
-use_noisy_top_k = False
-aux_loss_weight = 0.001
-router_z_loss_weight = 0.01
-router_ortho_loss_weight = 0.01
-router_ortho_neg_corr_weight = 1  # weight for negative correlations in router-ortho loss
-# experts_ortho_loss is very small due to squared cosine similarities.
-# So its weight is set higher to have a meaningful effect.
-experts_ortho_loss_weight = 0.01  
-gate_output_loss_weight = 0.0001
-train_capacity = 1.25
-eval_capacity = 3.0
-min_capacity = 4
-stride = 2
-moe_start_layer = 2
-use_switch_tfm_init = False
-switch_tfm_init_scale = 1.0  # recommended 0.1 for stability (pg.10, https://arxiv.org/abs/2101.03961)
-router_use_full_prec = False
-use_qwen3_moe_mlp = False
-
-# adamw optimizer
-learning_rate = 6e-4 # max learning rate
-weight_decay = 1e-1
-beta1 = 0.9
-beta2 = 0.95
-grad_clip = 0.0 # clip gradients at this value, or disable if == 0.0
-
-# epoch-based training
-num_epochs = 1.0  # total number of epochs to train (can be fractional)
-evals_per_epoch = 10  # number of evaluations per epoch
-warmup_tokens = 20_000_000  # absolute number of tokens for warmup (20M)
-decay_frac = 0.1     # fraction of total steps used for final decay
-
-# learning rate schedule
-decay_lr = True  # whether to use the warmup/stable/decay schedule
-
-# DDP settings
-backend = 'nccl' # 'nccl', 'gloo', etc.
-
-# system
-device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
-dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
-compile = True # use PyTorch 2.0 to compile the model to be faster
-# NOTE: Always override 'resume_from' in the command line or config file to load a checkpoint for eigenvalue analysis.
-resume_from = None  # Override to resume from a checkpoint directory.
-# Calculation scheme
-calc_scheme = 'rand_estimate' # loop, batch, rand_estimate
-
-# profiling
-use_profiler = False # enable PyTorch profiler
-profiler_schedule_wait = 2 # number of steps to wait before profiling
-profiler_schedule_warmup = 2 # number of warmup steps
-profiler_schedule_active = 6 # number of active profiling steps
-profiler_schedule_repeat = 1 # number of times to repeat the schedule
-profiler_output_dir = './profiler_results' # directory to save profiler results
-# -----------------------------------------------------------------------------
-config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-# Remove non-existent variables that were removed during epoch-based conversion
-config_keys = [k for k in config_keys if k not in ['max_iters', 'lr_decay_iters', 'eval_interval']]
-# Put everything in argv[1:] into globals(). If an argument is a config file, exec it,
-# otherwise if it's a --key=value argument, override the corresponding key in globals().
-exec(open('configurator.py').read()) # overrides from command line or config file
-config = {k: globals()[k] for k in config_keys}  # will be useful for logging
-#print(config)
-# -----------------------------------------------------------------------------
-
-assert resume_from is not None, "Please specify a checkpoint to load using the 'resume_from' variable."
-
-# model init
-model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  bias=bias, vocab_size=None, n_exp=n_exp, moe_top_k=moe_top_k,
-                  use_aux_loss=use_aux_loss, use_router_z_loss=use_router_z_loss,
-                  use_router_ortho_loss=use_router_ortho_loss,
-                  use_experts_ortho_loss=use_experts_ortho_loss,
-                  use_gate_output_loss=use_gate_output_loss,
-                  use_noisy_top_k=use_noisy_top_k, aux_loss_weight=aux_loss_weight,
-                  router_z_loss_weight=router_z_loss_weight, 
-                  router_ortho_loss_weight=router_ortho_loss_weight,
-                  router_ortho_neg_corr_weight=router_ortho_neg_corr_weight,
-                  experts_ortho_loss_weight=experts_ortho_loss_weight,
-                  gate_output_loss_weight=gate_output_loss_weight,
-                  train_capacity=train_capacity,
-                  eval_capacity=eval_capacity, min_capacity=min_capacity, 
-                  stride=stride, moe_start_layer=moe_start_layer,
-                  use_switch_tfm_init=use_switch_tfm_init, switch_tfm_init_scale=switch_tfm_init_scale,
-                  router_use_full_prec=router_use_full_prec,
-                  use_qwen3_moe_mlp=use_qwen3_moe_mlp) # start with model_args from command line
-#print('\n\n')
-#print(model_args)
-#print('\n\n')
-# Load model
-model = GPT.from_pretrained(resume_from, trust_remote_code=True)
-model.to(device)
-
+model = AutoModelForCausalLM.from_pretrained(args.resume_from, trust_remote_code=True)
 row_sim_means = []
 row_sim_stds = []
 
 # Remove trailing slash if any
-resume_from = resume_from.rstrip('/').rstrip('\\')
+resume_from = args.resume_from.rstrip('/').rstrip('\\')
 ckpt_filename = os.path.basename(resume_from)
 print(f"Model {ckpt_filename}:")
 
@@ -161,7 +37,7 @@ for layer, block in enumerate(model.transformer.h):
     G = G / (G.norm(dim=2, keepdim=True) + 1e-12)
     E, D, F = G.size()  # n_exp, n_embd, intermediate_size
 
-    if calc_scheme == 'rand_estimate':
+    if args.calc_scheme == 'rand_estimate':
         est_frob2 = torch.zeros(E, device=G.device, dtype=G.dtype)
         for _ in range(num_rand_probes):
             z = (torch.randint(0, 2, (E, D, 1), device=G.device) * 2 - 1).to(G.dtype)  # [E,D,1]
@@ -174,7 +50,7 @@ for layer, block in enumerate(model.transformer.h):
         # Match offdiag.square().mean() (mean over D*D entries)
         row_sim_per_expert = est_frob2 / (D * D - D)
 
-    elif calc_scheme == 'batch':
+    elif args.calc_scheme == 'batch':
         # Batched Gram: [n_exp, n_embd, n_embd]
         # This computes cosine similarity between all pairs of row vectors of 
         # each expert's gate projection matrix.

@@ -364,8 +364,12 @@ model.to(device)
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
-# optimizer
-optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+# optimizer(s) - model.setup_optimizers may return a single optimizer or a list
+optimizer_result = model.setup_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+if isinstance(optimizer_result, (list, tuple)):
+    optimizers = list(optimizer_result)
+else:
+    optimizers = [optimizer_result]
 
 # compile the model
 if compile:
@@ -412,6 +416,8 @@ def estimate_loss(val_loader):
         with ctx:
             _, loss, losses = model(input_ids=X, labels=Y, return_dict=False)
         
+        # All losses other than ntp_loss are actually zero, since in modeling_nanomoe_gpt.py,
+        # the losses are computed only if self.training is True.
         for key in val_losses:
             val_losses[key][k] = losses[key]
     
@@ -486,8 +492,12 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
     if ddp:
         model = DDP(model, device_ids=[ddp_local_rank])
 
-    # Recreate optimizer for the loaded model, then load state
-    optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+    # Recreate optimizer(s) for the loaded model, then load state
+    optimizer_result = model.setup_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+    if isinstance(optimizer_result, (list, tuple)):
+        optimizers = list(optimizer_result)
+    else:
+        optimizers = [optimizer_result]
 
     # Load training state
     # PyTorch 2.6+ defaults weights_only=True; training_state contains non-tensor objects.
@@ -497,7 +507,11 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
         map_location=device,
         weights_only=False,
     )
-    optimizer.load_state_dict(training_state['optimizer_state_dict'])
+    optimizer_state_dicts = training_state['optimizer_state_dict']
+    if not isinstance(optimizer_state_dicts, list):
+        optimizer_state_dicts = [optimizer_state_dicts]
+    for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
+        optimizer.load_state_dict(state_dict)
     scaler.load_state_dict(training_state['scaler_state_dict'])
     global_iter = training_state['global_iter']
     eval_count = training_state['eval_count']
@@ -579,8 +593,9 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
 
         # determine and set the learning rate for this iteration
         lr = get_lr(global_iter) if decay_lr else learning_rate
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+        for optimizer in optimizers:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
 
         # evaluate the loss on train/val sets and write checkpoints
         if global_iter > 0 and global_iter % eval_every_n_iters == 0 and master_process:
@@ -619,11 +634,13 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 
                 if save_training_state:
                     # Add to training state
+                    # Save list of optimizer state dicts if multiple optimizers, else single state dict
+                    optimizer_state_dict = [opt.state_dict() for opt in optimizers] if len(optimizers) > 1 else optimizers[0].state_dict()
                     training_state = {
                         'global_iter': global_iter,
                         'eval_count': eval_count,
                         'best_val_loss': best_val_loss,
-                        'optimizer_state_dict': optimizer.state_dict(),
+                        'optimizer_state_dict': optimizer_state_dict,
                         'scaler_state_dict': scaler.state_dict(),
                         'config': config,
                         'model_args': model_args,
@@ -660,7 +677,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             with record_function("backward"):
                 scaler.scale(loss).backward()
 
-        # Only step optimizer every gradient_accumulation_steps iterations
+        # Only step optimizer(s) every gradient_accumulation_steps iterations
         if (global_iter + 1) % gradient_accumulation_steps == 0:
             with record_function("optimizer_step"):
                 # disable gradient clipping for now
@@ -668,11 +685,13 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 #    scaler.unscale_(optimizer)
                 #    # Store gradient norm tensor for later logging (avoid .item() sync here)
                 #    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-                # step the optimizer and scaler if training in fp16
-                scaler.step(optimizer)
+                # step the optimizer(s) and scaler if training in fp16
+                for optimizer in optimizers:
+                    scaler.step(optimizer)
                 scaler.update()
                 # flush the gradients as soon as we can, no need for this memory anymore
-                optimizer.zero_grad(set_to_none=True)
+                for optimizer in optimizers:
+                    optimizer.zero_grad(set_to_none=True)
 
         # timing and logging
         t1 = time.time()
