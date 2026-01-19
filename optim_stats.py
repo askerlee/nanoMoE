@@ -4,6 +4,17 @@ import json
 import argparse
 from transformers import AutoModelForCausalLM
 
+def smart_format(value, precision=5):
+    """Format number in scientific notation if very small/large, otherwise normal."""
+    if value == 0:
+        return f"{0:.{precision}e}"
+    abs_val = abs(value)
+    # Use scientific notation if < 0.001 or > 10000
+    if abs_val < 1e-3 or abs_val > 1e4:
+        return f"{value:.{precision}e}"
+    else:
+        return f"{value:.{precision}f}"
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--resume_from", type=str, required=True, help="Path to the checkpoint directory to resume from")
 parser.add_argument("--verbose", action='store_true', help="Whether to print detailed parameter states")
@@ -57,20 +68,35 @@ for param_id, param_state in state.items():
         exp_avg_sq_norm = param_state['exp_avg_sq'].norm().item()
 
         if 'experts' in param_name:
-            param_group_moment_dict['experts'][param_name] = [exp_avg_norm, exp_avg_sq_norm]
+            param_group_moment_dict['experts'][param_name] = {'exp_avg_norm': exp_avg_norm, 'exp_avg_sq_norm': exp_avg_sq_norm}
             # param_name: transformer.h.{i}.mlp.experts.{gate_proj, c_fc, c_proj}.
             # param_state['exp_avg']: [n_exp, n_embd, 4*n_embd] = [128, 512, 2048].
+            exp_avg_norms_by_expert = param_state['exp_avg'].norm(dim=(1,2))  # [n_exp]
+            # Find the top-32 and bottom-96 norms
+            K1, K2 = 32, 96
+            topk_norms = torch.topk(exp_avg_norms_by_expert, K1).values
+            bottomk_norms = - torch.topk(-exp_avg_norms_by_expert, K2).values
+            topk_norm_mean    = topk_norms.mean().item()
+            bottomk_norm_mean = bottomk_norms.mean().item()
+            param_group_moment_dict['experts'][param_name]['topk_exp_avg_norm_mean']    = topk_norm_mean
+            param_group_moment_dict['experts'][param_name]['bottomk_exp_avg_norm_mean'] = bottomk_norm_mean
+            param_group_moment_dict['experts'][param_name]['topk_bottomk_ratio'] = topk_norm_mean / (bottomk_norm_mean + 1e-13)
+            param_group_moment_dict['experts'][param_name]['exp_avg_norm_std'] = exp_avg_norms_by_expert.std().item()
+            param_name_short = param_name.replace("transformer.h.", "").replace("mlp.experts.", "")
+            ratio = param_group_moment_dict['experts'][param_name]['topk_bottomk_ratio']
+            std = param_group_moment_dict['experts'][param_name]['exp_avg_norm_std']
+            print(f"{param_name_short} top-{K1}/bottom-{K2} exp_avg_norm: {smart_format(topk_norm_mean)}/{smart_format(bottomk_norm_mean)} ratio: {smart_format(ratio, 4)}, std: {smart_format(std)}")
 
         elif 'router' in param_name:
-            param_group_moment_dict['routers'][param_name] = [exp_avg_norm, exp_avg_sq_norm]
+            param_group_moment_dict['routers'][param_name] = {'exp_avg_norm': exp_avg_norm, 'exp_avg_sq_norm': exp_avg_sq_norm}
         else:
-            param_group_moment_dict['others'][param_name]  = [exp_avg_norm, exp_avg_sq_norm]
+            param_group_moment_dict['others'][param_name]  = {'exp_avg_norm': exp_avg_norm, 'exp_avg_sq_norm': exp_avg_sq_norm}
 
 for key in sorted(param_group_moment_dict.keys()):
     print(f"{key} parameters: {len(param_group_moment_dict[key])}")
     if param_group_moment_dict[key]:
-        exp_avg_norms    = torch.tensor([m[0] for m in param_group_moment_dict[key].values()])
-        exp_avg_sq_norms = torch.tensor([m[1] for m in param_group_moment_dict[key].values()])
+        exp_avg_norms    = torch.tensor([m['exp_avg_norm']    for m in param_group_moment_dict[key].values()])
+        exp_avg_sq_norms = torch.tensor([m['exp_avg_sq_norm'] for m in param_group_moment_dict[key].values()])
         exp_avg_norm_mean = exp_avg_norms.mean().item()
         exp_avg_norm_std  = exp_avg_norms.std().item()
         exp_avg_sq_norm_mean = exp_avg_sq_norms.mean().item()
