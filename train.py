@@ -295,7 +295,6 @@ val_loader = torch.utils.data.DataLoader(
     drop_last=True
 )
 
-eval_iters = len(val_loader)
 print(f"Using {len(combined_train_dataset)} training tokens from datasets: {datasets}")
 print(f"Using {len(combined_val_dataset)} validation tokens from datasets: {datasets}")
 print(f"Train batches per epoch: {len(train_loader)}")
@@ -380,13 +379,24 @@ if ddp:
 
 # estimate validation loss using many batches
 @torch.no_grad()
-def estimate_loss():
+def estimate_loss(val_loader):
     model.eval()
     
-    val_losses = torch.zeros(eval_iters)
+    val_losses = { 'ntp_loss': 0,
+                   'aux_loss': 0,
+                   'router_z_loss': 0,
+                   'router_ortho_loss': 0,
+                   'experts_ortho_loss': 0, 
+                   'gate_output_loss': 0,
+                   'gate_diversity_loss': 0
+                }
+    
+    num_eval_iters = len(val_loader)
+    for key in val_losses:
+        val_losses[key] = torch.zeros(num_eval_iters, device=device)
     val_iter = iter(val_loader)
     
-    for k in range(eval_iters):
+    for k in range(num_eval_iters):
         try:
             X, Y = next(val_iter)
         except StopIteration:
@@ -401,10 +411,12 @@ def estimate_loss():
             
         with ctx:
             _, loss, losses = model(input_ids=X, labels=Y, return_dict=False)
-        val_losses[k] = losses['ntp_loss']
+        
+        for key in val_losses:
+            val_losses[key][k] = losses[key]
     
     model.train()
-    return val_losses.mean()
+    return {key: val_losses[key].mean() for key in val_losses}
 
 # learning rate scheduler (warmup -> stable -> decay to zero)
 def get_lr(it: int) -> float:
@@ -573,18 +585,18 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
         # evaluate the loss on train/val sets and write checkpoints
         if global_iter > 0 and global_iter % eval_every_n_iters == 0 and master_process:
             eval_count += 1
-            val_loss = estimate_loss()
-            print(f"epoch {epoch + 1}, step {global_iter}: val loss {val_loss:.4f}")
+            val_losses = estimate_loss(val_loader)
+            print(f"epoch {epoch + 1}, step {global_iter}: val loss {val_losses['ntp_loss']:.4f}")
             if wandb_log:
                 wandb.log({
-                    "val/loss": val_loss,
+                    "val/loss": val_losses['ntp_loss'],
                     "lr": lr,
                     "mfu": running_mfu*100, # convert to percentage
                     "tokens_seen": global_iter * batch_size * block_size,
                     "eval_count": eval_count,
                 }, step=global_iter)
-            if save_ckpt_every_n_evals != -1 and (val_loss < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
-                best_val_loss = val_loss
+            if save_ckpt_every_n_evals != -1 and (val_losses['ntp_loss'] < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
+                best_val_loss = val_losses['ntp_loss']
                 
                 # Save model using HuggingFace format
                 ckpt_dir = os.path.join(out_dir, f'{ckpt_prefix}-{eval_count}')
@@ -626,8 +638,8 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
 
         if eval_only and epoch == 0 and batch_idx == 0:
             # Run one evaluation then exit
-            val_loss = estimate_loss()
-            print(f"eval_only mode: val loss {val_loss:.4f}")
+            val_losses = estimate_loss(val_loader)
+            print(f"eval_only mode: val loss {val_losses['ntp_loss']:.4f}")
             break
 
         # forward backward update, with optional gradient accumulation to simulate larger batch size
