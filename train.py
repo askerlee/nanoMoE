@@ -401,7 +401,7 @@ def estimate_loss():
             
         with ctx:
             _, loss, losses = model(input_ids=X, labels=Y, return_dict=False)
-        val_losses[k] = loss.item()
+        val_losses[k] = losses['ntp_loss']
     
     model.train()
     return val_losses.mean()
