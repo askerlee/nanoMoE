@@ -842,10 +842,8 @@ class GPT(PreTrainedModel, GenerationMixin):
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
         # TODO: add expert config
-        # start with all of the candidate parameters
-        param_dict = {pn: p for pn, p in self.named_parameters()}
         # filter out those that do not require grad
-        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
         # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
         # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
         # add an extra check for "bias" string to account for bias terms in MoE layers
