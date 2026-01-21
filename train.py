@@ -439,6 +439,10 @@ if isinstance(optimizer_result, (list, tuple)):
 else:
     optimizers = [optimizer_result]
 
+# Reorganize param_groups: separate embeddings from other parameters
+# Build a mapping of parameter id to name
+param_name_map = {id(p): n for n, p in model.named_parameters()}
+
 # Load optimizer and scaler state if resuming
 if training_state is not None:
     optimizer_state_dicts = training_state['optimizer_state_dict']
@@ -446,11 +450,68 @@ if training_state is not None:
         optimizer_state_dicts = [optimizer_state_dicts]
     for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
         optimizer.load_state_dict(state_dict)
-        # Update weight_decay to apply new value from config (overrides checkpoint value)
-        # Only update param_groups that have weight_decay > 0 (preserve those set to 0)
-        for param_group in optimizer.param_groups:
-            if param_group['weight_decay'] > 0:
-                param_group['weight_decay'] = weight_decay
+            
+        # Snapshot original groups/options
+        old_groups = optimizer.param_groups
+
+        # Map param_id -> old_group_options (so we can preserve lr/betas/eps/etc)
+        pid_to_options = {}
+        pid_to_param   = {}
+        for g in old_groups:
+            options = {k: v for k, v in g.items() if k != "params"}
+            for p in g["params"]:
+                pid = id(p)
+                pid_to_param[pid] = p
+                # if a param appears in multiple groups (shouldn't), first wins
+                pid_to_options.setdefault(pid, options)
+
+        # Classify params
+        embedding_pids = set()
+        decay_pids = set()
+        nodecay_pids = set()
+
+        for pid, p in pid_to_param.items():
+            name = param_name_map.get(pid, "")
+            is_emb = ("wte" in name) or ("wpe" in name)
+            if is_emb:
+                embedding_pids.add(pid)
+                continue
+
+            # Use original grouping to decide decay vs no-decay
+            options = pid_to_options.get(pid, {})
+            if options.get("weight_decay", 0.0) and options.get("weight_decay", 0.0) > 0:
+                decay_pids.add(pid)
+            else:
+                nodecay_pids.add(pid)
+
+        # Helper to build group dict with preserved options
+        defaults = optimizer.defaults.copy()
+
+        def make_group(pids, weight_decay, ref_pid=None):
+            if not pids:
+                return None
+            # start from optimizer defaults, then override with some reference group's opts if available
+            grp = defaults.copy()
+            if ref_pid is not None and ref_pid in pid_to_options:
+                grp.update(pid_to_options[ref_pid])
+            grp["params"] = [pid_to_param[pid] for pid in pids]
+            grp["weight_decay"] = weight_decay
+            return grp
+
+        # Pick reference pids to preserve lr/betas/etc consistent with old groups
+        ref_decay = next(iter(decay_pids), None)
+        ref_nodecay = next(iter(nodecay_pids), None)
+        ref_emb = next(iter(embedding_pids), None)
+
+        new_groups = []
+        g = make_group(decay_pids, weight_decay, ref_decay)
+        if g: new_groups.append(g)
+        g = make_group(nodecay_pids, 0.0, ref_nodecay)
+        if g: new_groups.append(g)
+        g = make_group(embedding_pids, 0.0, ref_emb)
+        if g: new_groups.append(g)
+
+        optimizer.param_groups = new_groups
         # Discard gradient accumulation buffers if any, to avoid OOM.
         optimizer.zero_grad(set_to_none=True)
     
