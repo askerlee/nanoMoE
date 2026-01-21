@@ -167,6 +167,7 @@ use_qwen3_moe_mlp = False
 
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
+lr_scale = 1.0  # scale learning rate by this factor, convenient for continual training with lower lr.
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
@@ -175,7 +176,7 @@ grad_clip = 0.0 # clip gradients at this value, or disable if == 0.0
 # epoch-based training
 num_epochs = 1.0  # total number of epochs to train (can be fractional)
 evals_per_epoch = 10  # number of evaluations per epoch
-warmup_tokens = 20_000_000  # absolute number of tokens for warmup (20M)
+warmup_tokens = 200_000_000  # absolute number of tokens for warmup (200M)
 decay_frac = 0.1     # fraction of total steps used for final decay
 
 # learning rate schedule
@@ -432,7 +433,7 @@ else:
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer(s) - model.setup_optimizers may return a single optimizer or a list
-optimizer_result = model.setup_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+optimizer_result = model.setup_optimizers(weight_decay, learning_rate * lr_scale, (beta1, beta2), device_type)
 if isinstance(optimizer_result, (list, tuple)):
     optimizers = list(optimizer_result)
 else:
@@ -504,7 +505,7 @@ def estimate_loss(val_loader):
     return {key: val_losses[key].mean() for key in val_losses}
 
 # learning rate scheduler (warmup -> stable -> decay to zero)
-def get_lr(it: int) -> float:
+def get_lr(learning_rate: float, it: int) -> float:
     """Compute learning rate at iteration it."""
     if it < warmup_iters:
         return learning_rate * (it + 1) / float(warmup_iters + 1)
@@ -608,7 +609,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             X, Y = X.to(device), Y.to(device)
 
         # determine and set the learning rate for this iteration
-        lr = get_lr(global_iter) if decay_lr else learning_rate
+        lr = get_lr(learning_rate * lr_scale, persist_global_iter) if decay_lr else (learning_rate * lr_scale)
         for optimizer in optimizers:
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
