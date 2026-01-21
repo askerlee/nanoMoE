@@ -112,6 +112,7 @@ save_ckpt_regardless_loss = True
 # Whether to save optimizer and scaler state along with model.
 # Useful on slurm clusters where jobs have a short time limit and need to be resumed often.
 save_training_state = True  
+skip_batches_on_resume = True  # if True, skip batches when resuming to avoid repeating training on the same data.
 ckpt_prefix = "nanomoe"
 seed = 1337
 
@@ -518,6 +519,11 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
     best_val_loss = training_state['best_val_loss']
     start_epoch = training_state.get('epoch', 0)
     start_batch_idx = training_state.get('batch_idx', 0)
+    if skip_batches_on_resume and start_batch_idx > 0:
+        print(f"Will skip {start_batch_idx} batches in epoch {start_epoch} to resume correctly.")
+    else:
+        print(f"Checkpoint indicates to skip {start_batch_idx} batches, but skip_batches_on_resume is set to False.")
+        start_batch_idx = 0
     
     # Restore RNG states
     rng_state = training_state['rng_state']
