@@ -446,6 +446,11 @@ if training_state is not None:
         optimizer_state_dicts = [optimizer_state_dicts]
     for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
         optimizer.load_state_dict(state_dict)
+        # Update weight_decay to apply new value from config (overrides checkpoint value)
+        # Only update param_groups that have weight_decay > 0 (preserve those set to 0)
+        for param_group in optimizer.param_groups:
+            if param_group['weight_decay'] > 0:
+                param_group['weight_decay'] = weight_decay
         # Discard gradient accumulation buffers if any, to avoid OOM.
         optimizer.zero_grad(set_to_none=True)
     
@@ -609,6 +614,9 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
         for optimizer in optimizers:
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
+                # Only update weight_decay for param_groups that have it > 0 (preserve those set to 0)
+                if param_group['weight_decay'] > 0:
+                    param_group['weight_decay'] = weight_decay
 
         # evaluate the loss on train/val sets and write checkpoints
         if global_iter > 0 and global_iter % eval_every_n_iters == 0 and master_process:
