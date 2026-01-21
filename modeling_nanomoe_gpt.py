@@ -840,7 +840,7 @@ class GPT(PreTrainedModel, GenerationMixin):
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
 
-    def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
+    def setup_optimizers(self, weight_decay, learning_rate, betas, device_type):
         # TODO: add expert config
         # filter out those that do not require grad
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
@@ -872,7 +872,7 @@ class GPT(PreTrainedModel, GenerationMixin):
     # In the original nanoMoE code, embeddings are decayed which is not a good practice.
     # Otherwise, this is the same as nanoMoE's setup_optimizers().
     # add an extra check for "bias" string to account for bias terms in MoE layers
-    def setup_optimizers(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.8, 0.95), scalar_lr=0.5):
+    def setup_optimizers2(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.8, 0.95), scalar_lr=0.5):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
         # Separate out all parameters into 4 groups (matrix, embedding, ln_f, position_embedding)
