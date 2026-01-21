@@ -524,6 +524,7 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
     else:
         print(f"Checkpoint indicates to skip {start_batch_idx} batches, but skip_batches_on_resume is set to False.")
         start_batch_idx = 0
+        global_iter = 0
     
     # Restore RNG states
     rng_state = training_state['rng_state']
