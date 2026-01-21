@@ -478,14 +478,10 @@ def estimate_loss(val_loader):
     num_eval_iters = len(val_loader)
     for key in val_losses:
         val_losses[key] = torch.zeros(num_eval_iters, device=device)
-    val_iter = iter(val_loader)
     
-    for k in range(num_eval_iters):
-        try:
-            X, Y = next(val_iter)
-        except StopIteration:
-            val_iter = iter(val_loader)
-            X, Y = next(val_iter)
+    for k, (X, Y) in enumerate(val_loader):
+        if k >= num_eval_iters:
+            break
         
         # Move to device
         if device_type == 'cuda':
@@ -609,7 +605,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             X, Y = X.to(device), Y.to(device)
 
         # determine and set the learning rate for this iteration
-        lr = get_lr(learning_rate * lr_scale, persist_global_iter) if decay_lr else (learning_rate * lr_scale)
+        lr = get_lr(learning_rate * lr_scale, global_iter) if decay_lr else (learning_rate * lr_scale)
         for optimizer in optimizers:
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
