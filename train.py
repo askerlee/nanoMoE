@@ -240,14 +240,15 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 
 if isinstance(datasets, str):
     datasets = [datasets]
-    
+
 train_datasets = []
 val_datasets = []
 
 for dataset in datasets:
     # data loading
     if "-" in dataset:
-        dataset, dataset_size = dataset.split("-")
+        # Only split at the first '-' to allow dataset names like "fineweb_edu-50B-skip50B"
+        dataset, dataset_size = dataset.split("-", 1)
         train_filename = f"train-{dataset_size}.bin"
         val_filename   = f"val-{dataset_size}.bin"
     else:
