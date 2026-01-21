@@ -335,6 +335,8 @@ print(f"  Tokens per epoch: {tokens_per_epoch:,}")
 # training state
 best_val_loss = 1e9
 global_iter = 0
+# persist_global_iter: persistent global iteration counter across training sessions.
+persist_global_iter = 0
 eval_count = 0
 start_epoch = 0
 start_batch_idx = 0
@@ -365,50 +367,54 @@ print('\n\n')
 
 # Check if resuming from checkpoint or training from scratch
 training_state = None
-if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')):
+if resume_from:
     print(f"Resuming training from {resume_from}")
     
     # Load model from checkpoint
     model = GPT.from_pretrained(resume_from, trust_remote_code=True)
     model.to(device)
 
-    # Load training state
-    # PyTorch 2.6+ defaults weights_only=True; training_state contains non-tensor objects.
-    # Set weights_only=False when loading trusted checkpoints.
-    training_state = torch.load(
-        os.path.join(resume_from, 'training_state.pt'),
-        map_location='cpu',
-        weights_only=False,
-    )
-    global_iter = training_state['global_iter']
-    eval_count = training_state['eval_count']
-    best_val_loss = training_state['best_val_loss']
-    start_epoch = training_state.get('epoch', 0)
-    start_batch_idx = training_state.get('batch_idx', 0)
-    if skip_batches_on_resume and start_batch_idx > 0:
-        print(f"Will skip {start_batch_idx} batches in epoch {start_epoch} to resume correctly.")
-    else:
-        print(f"Checkpoint indicates to skip {start_batch_idx} batches, but skip_batches_on_resume is set to False.")
-        start_batch_idx = 0
-        global_iter = 0
-    
-    # Restore RNG states
-    rng_state = training_state['rng_state']
-    if isinstance(rng_state, torch.Tensor):
-        rng_state = rng_state.detach().to(device='cpu', dtype=torch.uint8)
-    else:
-        rng_state = torch.as_tensor(rng_state, dtype=torch.uint8, device='cpu')
-    torch.set_rng_state(rng_state)
-    np.random.set_state(training_state['numpy_rng_state'])
-    random.setstate(training_state['python_rng_state'])
-    if 'cuda_rng_state' in training_state and torch.cuda.is_available():
-        cuda_rng_state = training_state['cuda_rng_state']
-        if isinstance(cuda_rng_state, torch.Tensor):
-            cuda_rng_state = cuda_rng_state.detach().to(device='cpu', dtype=torch.uint8)
+    if os.path.exists(os.path.join(resume_from, 'training_state.pt')):
+        # Load training state
+        # PyTorch 2.6+ defaults weights_only=True; training_state contains non-tensor objects.
+        # Set weights_only=False when loading trusted checkpoints.
+        training_state = torch.load(
+            os.path.join(resume_from, 'training_state.pt'),
+            map_location='cpu',
+            weights_only=False,
+        )
+        global_iter = training_state['global_iter']
+        persist_global_iter = training_state.get('persist_global_iter', global_iter)
+        eval_count = training_state['eval_count']
+        best_val_loss = training_state['best_val_loss']
+        start_epoch = training_state.get('epoch', 0)
+        start_batch_idx = training_state.get('batch_idx', 0)
+        if skip_batches_on_resume and start_batch_idx > 0:
+            print(f"Will skip {start_batch_idx} batches in epoch {start_epoch} to resume correctly.")
         else:
-            cuda_rng_state = torch.as_tensor(cuda_rng_state, dtype=torch.uint8, device='cpu')
-        torch.cuda.set_rng_state(cuda_rng_state)
-    print(f"Resumed from epoch {start_epoch}, batch {start_batch_idx}, iter {global_iter}")
+            print(f"Checkpoint indicates to skip {start_batch_idx} batches, but skip_batches_on_resume is set to False.")
+            start_batch_idx = 0
+            # NOTE: don't reset persist_global_iter here, instead allow persist_global_iter to 
+            # track the total number of iterations across multiple training sessions.
+            global_iter = 0
+        
+        # Restore RNG states
+        rng_state = training_state['rng_state']
+        if isinstance(rng_state, torch.Tensor):
+            rng_state = rng_state.detach().to(device='cpu', dtype=torch.uint8)
+        else:
+            rng_state = torch.as_tensor(rng_state, dtype=torch.uint8, device='cpu')
+        torch.set_rng_state(rng_state)
+        np.random.set_state(training_state['numpy_rng_state'])
+        random.setstate(training_state['python_rng_state'])
+        if 'cuda_rng_state' in training_state and torch.cuda.is_available():
+            cuda_rng_state = training_state['cuda_rng_state']
+            if isinstance(cuda_rng_state, torch.Tensor):
+                cuda_rng_state = cuda_rng_state.detach().to(device='cpu', dtype=torch.uint8)
+            else:
+                cuda_rng_state = torch.as_tensor(cuda_rng_state, dtype=torch.uint8, device='cpu')
+            torch.cuda.set_rng_state(cuda_rng_state)
+        print(f"Resumed from epoch {start_epoch}, batch {start_batch_idx}, iter {global_iter}")
     # Keep training_state for loading optimizer/scaler states later
 else:
     # Train from scratch - determine the vocab size and create new model
@@ -617,7 +623,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     "val/loss": val_losses['ntp_loss'],
                     "lr": lr,
                     "mfu": running_mfu*100, # convert to percentage
-                    "tokens_seen": global_iter * batch_size * block_size,
+                    "tokens_seen": persist_global_iter * batch_size * block_size,
                     "eval_count": eval_count,
                 }, step=global_iter)
             if save_ckpt_every_n_evals != -1 and (val_losses['ntp_loss'] < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
@@ -648,6 +654,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     optimizer_state_dict = [opt.state_dict() for opt in optimizers] if len(optimizers) > 1 else optimizers[0].state_dict()
                     training_state = {
                         'global_iter': global_iter,
+                        'persist_global_iter': persist_global_iter,
                         'eval_count': eval_count,
                         'best_val_loss': best_val_loss,
                         'optimizer_state_dict': optimizer_state_dict,
@@ -742,7 +749,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     "mfu": running_mfu*100,
                     "tok_per_sec": running_tokens_per_sec,
                     "time_ms": dt*1000,
-                    "tokens_seen": global_iter * batch_size * block_size,
+                    "tokens_seen": persist_global_iter * batch_size * block_size,
                 }, step=global_iter)
         
         # Profiler step
@@ -750,6 +757,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             profiler.step()
 
         global_iter += 1
+        persist_global_iter += 1
 
     if global_iter >= total_iters:
         break
