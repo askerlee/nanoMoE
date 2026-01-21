@@ -261,7 +261,7 @@ for dataset in datasets:
     
     train_dataset = ChunkDataset(train_bin_path, block_size)
     val_dataset = ChunkDataset(val_bin_path, block_size)
-    print(f"Loaded dataset {dataset}:")
+    print(f"Loaded dataset {train_bin_path}/{val_bin_path}:")
     print(f"  train tokens: {len(train_dataset.data):,}")
     print(f"  val tokens: {len(val_dataset.data):,}")
     print()
