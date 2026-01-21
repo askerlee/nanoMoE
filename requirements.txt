@@ -4,3 +4,4 @@ datasets
 numpy
 wandb
 tqdm
+-e git+https://github.com/askerlee/nanochat.git@master#egg=nanochat
