@@ -334,6 +334,10 @@ print(f"  Tokens per epoch: {tokens_per_epoch:,}")
 
 # training state
 best_val_loss = 1e9
+global_iter = 0
+eval_count = 0
+start_epoch = 0
+start_batch_idx = 0
 
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
@@ -358,16 +362,65 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
 print('\n\n')
 print(model_args)
 print('\n\n')
-# determine the vocab size we'll use for from-scratch training
-print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
-model_args['vocab_size'] = 50304
-gptconf = GPTConfig(**model_args)
-model = GPT(gptconf)
-# crop down the model block size if desired, using model surgery
-if block_size < model.config.block_size:
-    model.crop_block_size(block_size)
-    model_args['block_size'] = block_size # so that the checkpoint will have the right value
-model.to(device)
+
+# Check if resuming from checkpoint or training from scratch
+training_state = None
+if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')):
+    print(f"Resuming training from {resume_from}")
+    
+    # Load model from checkpoint
+    model = GPT.from_pretrained(resume_from, trust_remote_code=True)
+    model.to(device)
+
+    # Load training state
+    # PyTorch 2.6+ defaults weights_only=True; training_state contains non-tensor objects.
+    # Set weights_only=False when loading trusted checkpoints.
+    training_state = torch.load(
+        os.path.join(resume_from, 'training_state.pt'),
+        map_location='cpu',
+        weights_only=False,
+    )
+    global_iter = training_state['global_iter']
+    eval_count = training_state['eval_count']
+    best_val_loss = training_state['best_val_loss']
+    start_epoch = training_state.get('epoch', 0)
+    start_batch_idx = training_state.get('batch_idx', 0)
+    if skip_batches_on_resume and start_batch_idx > 0:
+        print(f"Will skip {start_batch_idx} batches in epoch {start_epoch} to resume correctly.")
+    else:
+        print(f"Checkpoint indicates to skip {start_batch_idx} batches, but skip_batches_on_resume is set to False.")
+        start_batch_idx = 0
+        global_iter = 0
+    
+    # Restore RNG states
+    rng_state = training_state['rng_state']
+    if isinstance(rng_state, torch.Tensor):
+        rng_state = rng_state.detach().to(device='cpu', dtype=torch.uint8)
+    else:
+        rng_state = torch.as_tensor(rng_state, dtype=torch.uint8, device='cpu')
+    torch.set_rng_state(rng_state)
+    np.random.set_state(training_state['numpy_rng_state'])
+    random.setstate(training_state['python_rng_state'])
+    if 'cuda_rng_state' in training_state and torch.cuda.is_available():
+        cuda_rng_state = training_state['cuda_rng_state']
+        if isinstance(cuda_rng_state, torch.Tensor):
+            cuda_rng_state = cuda_rng_state.detach().to(device='cpu', dtype=torch.uint8)
+        else:
+            cuda_rng_state = torch.as_tensor(cuda_rng_state, dtype=torch.uint8, device='cpu')
+        torch.cuda.set_rng_state(cuda_rng_state)
+    print(f"Resumed from epoch {start_epoch}, batch {start_batch_idx}, iter {global_iter}")
+    # Keep training_state for loading optimizer/scaler states later
+else:
+    # Train from scratch - determine the vocab size and create new model
+    print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
+    model_args['vocab_size'] = 50304
+    gptconf = GPTConfig(**model_args)
+    model = GPT(gptconf)
+    # crop down the model block size if desired, using model surgery
+    if block_size < model.config.block_size:
+        model.crop_block_size(block_size)
+        model_args['block_size'] = block_size # so that the checkpoint will have the right value
+    model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
@@ -378,6 +431,16 @@ if isinstance(optimizer_result, (list, tuple)):
     optimizers = list(optimizer_result)
 else:
     optimizers = [optimizer_result]
+
+# Load optimizer and scaler state if resuming
+if training_state is not None:
+    optimizer_state_dicts = training_state['optimizer_state_dict']
+    if not isinstance(optimizer_state_dicts, list):
+        optimizer_state_dicts = [optimizer_state_dicts]
+    for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
+        optimizer.load_state_dict(state_dict)
+    
+    scaler.load_state_dict(training_state['scaler_state_dict'])
 
 # compile the model
 if compile:
@@ -481,78 +544,6 @@ if use_profiler and master_process:
         with_stack=True
     )
     profiler.start()
-
-global_iter = 0
-eval_count = 0
-start_epoch = 0
-start_batch_idx = 0
-
-if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')):
-    print(f"Resuming training from {resume_from}")
-    
-    # Load model
-    model = GPT.from_pretrained(resume_from, trust_remote_code=True)
-    model.to(device)
-
-    # Re-apply compile and DDP wrapping after loading the model
-    if compile:
-        model = torch.compile(model)
-    if ddp:
-        model = DDP(model, device_ids=[ddp_local_rank])
-
-    # Recreate optimizer(s) for the loaded model, then load state
-    optimizer_result = model.setup_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
-    if isinstance(optimizer_result, (list, tuple)):
-        optimizers = list(optimizer_result)
-    else:
-        optimizers = [optimizer_result]
-
-    # Load training state
-    # PyTorch 2.6+ defaults weights_only=True; training_state contains non-tensor objects.
-    # Set weights_only=False when loading trusted checkpoints.
-    training_state = torch.load(
-        os.path.join(resume_from, 'training_state.pt'),
-        map_location='cpu',
-        weights_only=False,
-    )
-    optimizer_state_dicts = training_state['optimizer_state_dict']
-    if not isinstance(optimizer_state_dicts, list):
-        optimizer_state_dicts = [optimizer_state_dicts]
-    for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
-        optimizer.load_state_dict(state_dict)
-        del state_dict  # free memory
-
-    scaler.load_state_dict(training_state['scaler_state_dict'])
-    global_iter = training_state['global_iter']
-    eval_count = training_state['eval_count']
-    best_val_loss = training_state['best_val_loss']
-    start_epoch = training_state.get('epoch', 0)
-    start_batch_idx = training_state.get('batch_idx', 0)
-    if skip_batches_on_resume and start_batch_idx > 0:
-        print(f"Will skip {start_batch_idx} batches in epoch {start_epoch} to resume correctly.")
-    else:
-        print(f"Checkpoint indicates to skip {start_batch_idx} batches, but skip_batches_on_resume is set to False.")
-        start_batch_idx = 0
-        global_iter = 0
-    
-    # Restore RNG states
-    rng_state = training_state['rng_state']
-    if isinstance(rng_state, torch.Tensor):
-        rng_state = rng_state.detach().to(device='cpu', dtype=torch.uint8)
-    else:
-        rng_state = torch.as_tensor(rng_state, dtype=torch.uint8, device='cpu')
-    torch.set_rng_state(rng_state)
-    np.random.set_state(training_state['numpy_rng_state'])
-    random.setstate(training_state['python_rng_state'])
-    if 'cuda_rng_state' in training_state and torch.cuda.is_available():
-        cuda_rng_state = training_state['cuda_rng_state']
-        if isinstance(cuda_rng_state, torch.Tensor):
-            cuda_rng_state = cuda_rng_state.detach().to(device='cpu', dtype=torch.uint8)
-        else:
-            cuda_rng_state = torch.as_tensor(cuda_rng_state, dtype=torch.uint8, device='cpu')
-        torch.cuda.set_rng_state(cuda_rng_state)
-    print(f"Resumed from epoch {start_epoch}, batch {start_batch_idx}, iter {global_iter}")
-    del training_state  # free memory
 
 raw_model = model.module if ddp else model
 
