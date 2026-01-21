@@ -614,9 +614,6 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
         for optimizer in optimizers:
             for param_group in optimizer.param_groups:
                 param_group['lr'] = lr
-                # Only update weight_decay for param_groups that have it > 0 (preserve those set to 0)
-                if param_group['weight_decay'] > 0:
-                    param_group['weight_decay'] = weight_decay
 
         # evaluate the loss on train/val sets and write checkpoints
         if global_iter > 0 and global_iter % eval_every_n_iters == 0 and master_process:
