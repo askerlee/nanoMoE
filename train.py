@@ -439,6 +439,8 @@ if training_state is not None:
         optimizer_state_dicts = [optimizer_state_dicts]
     for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
         optimizer.load_state_dict(state_dict)
+        # Discard gradient accumulation buffers if any, to avoid OOM.
+        optimizer.zero_grad(set_to_none=True)
     
     scaler.load_state_dict(training_state['scaler_state_dict'])
 
