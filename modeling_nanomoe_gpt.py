@@ -845,11 +845,10 @@ class GPT(PreTrainedModel, GenerationMixin):
         # filter out those that do not require grad
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
         # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
-        # i.e. all weight tensors in matmuls decay, all biases, layernorms, and embeddings don't.
+        # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
         # add an extra check for "bias" string to account for bias terms in MoE layers
-        # exclude embeddings (wte, wpe) from weight decay
-        decay_params = [p for n, p in param_dict.items() if (p.dim() >= 2 and not n.endswith('bias') and 'wte' not in n and 'wpe' not in n)]
-        nodecay_params = [p for n, p in param_dict.items() if (p.dim() < 2 or n.endswith('bias') or 'wte' in n or 'wpe' in n)]
+        decay_params = [p for n, p in param_dict.items() if (p.dim() >= 2 and not n.endswith('bias'))]
+        nodecay_params = [p for n, p in param_dict.items() if (p.dim() < 2 or n.endswith('bias'))]
         optim_groups = [
             {'params': decay_params, 'weight_decay': weight_decay},
             {'params': nodecay_params, 'weight_decay': 0.0}
