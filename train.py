@@ -505,7 +505,7 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
     # Set weights_only=False when loading trusted checkpoints.
     training_state = torch.load(
         os.path.join(resume_from, 'training_state.pt'),
-        map_location=device,
+        map_location='cpu',
         weights_only=False,
     )
     optimizer_state_dicts = training_state['optimizer_state_dict']
