@@ -155,7 +155,9 @@ gate_output_loss_weight = 0.0001
 gate_diversity_loss_weight = 0.01
 train_capacity = 1.25
 eval_capacity = 3.0
-min_capacity = 4
+# min_capacity: minimum number of tokens per expert. 
+# train_capacity and eval_capacity are scale factors, not absolute numbers.
+min_capacity = 4 
 stride = 2
 moe_start_layer = 2
 use_switch_tfm_init = False
@@ -245,6 +247,7 @@ train_datasets = []
 val_datasets = []
 
 for dataset in datasets:
+    dataset_ = dataset
     # data loading
     if "-" in dataset:
         # Only split at the first '-' to allow dataset names like "fineweb_edu-50B-skip50B"
@@ -261,7 +264,7 @@ for dataset in datasets:
     
     train_dataset = ChunkDataset(train_bin_path, block_size)
     val_dataset = ChunkDataset(val_bin_path, block_size)
-    print(f"Loaded dataset {train_bin_path}/{val_bin_path}:")
+    print(f"Loaded dataset {dataset_} ({train_bin_path}, {val_bin_path}):")
     print(f"  train tokens: {len(train_dataset.data):,}")
     print(f"  val tokens: {len(val_dataset.data):,}")
     print()
@@ -517,6 +520,8 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
         optimizer_state_dicts = [optimizer_state_dicts]
     for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
         optimizer.load_state_dict(state_dict)
+        del state_dict  # free memory
+
     scaler.load_state_dict(training_state['scaler_state_dict'])
     global_iter = training_state['global_iter']
     eval_count = training_state['eval_count']
@@ -547,6 +552,7 @@ if resume_from and os.path.exists(os.path.join(resume_from, 'training_state.pt')
             cuda_rng_state = torch.as_tensor(cuda_rng_state, dtype=torch.uint8, device='cpu')
         torch.cuda.set_rng_state(cuda_rng_state)
     print(f"Resumed from epoch {start_epoch}, batch {start_batch_idx}, iter {global_iter}")
+    del training_state  # free memory
 
 raw_model = model.module if ddp else model
 
