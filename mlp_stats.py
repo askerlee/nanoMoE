@@ -1,4 +1,14 @@
-import os
+import os, io
+from contextlib import redirect_stderr
+
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["GLOG_minloglevel"] = "3"
+os.environ["ABSL_CPP_MIN_LOG_LEVEL"] = "3"
+
+buf = io.StringIO()
+with redirect_stderr(buf):
+    import tensorflow as tf
+
 import time
 import torch
 import argparse
@@ -25,17 +35,17 @@ print(f"Model {ckpt_filename}:")
 num_rand_probes = 16
 type2stats = {}
 
-for layer, block in enumerate(model.transformer.h):
-    # Something like transformers_modules.sb0r_hyphen_550.modeling_nanomoe_gpt.MLP.MOELayer
-    if not type(block.mlp).__name__.endswith("MOELayer"):
-        # print(f"Block {layer} is {type(block.mlp)}, not a MOELayer, skipping...")
-        continue
-    moe_layer = block.mlp
-    assert type(moe_layer.experts).__name__.endswith("Qwen3MLPExperts"), "Expected Qwen3MLPExperts"
-    experts = moe_layer.experts
-    for typename in ("gate_proj", "c_fc", "c_proj"):
+for comp_type in ("gate_proj", "c_fc", "c_proj"):
+    for layer, block in enumerate(model.transformer.h):
+        # Something like transformers_modules.sb0r_hyphen_550.modeling_nanomoe_gpt.MLP.MOELayer
+        if not type(block.mlp).__name__.endswith("MOELayer"):
+            # print(f"Block {layer} is {type(block.mlp)}, not a MOELayer, skipping...")
+            continue
+        moe_layer = block.mlp
+        assert type(moe_layer.experts).__name__.endswith("Qwen3MLPExperts"), "Expected Qwen3MLPExperts"
+        experts = moe_layer.experts
         # G: [n_exp, n_embd, intermediate_size]
-        G = getattr(experts, typename)
+        G = getattr(experts, comp_type)
         # Row-normalize: normalize each row vector over intermediate_size
         G = G / (G.norm(dim=2, keepdim=True) + 1e-12)
         E, D, F = G.size()  # n_exp, n_embd, intermediate_size
@@ -86,13 +96,14 @@ for layer, block in enumerate(model.transformer.h):
         top5_row_sims, _ = torch.topk(row_sim_per_expert, 5)
         top5_row_sim_mean = top5_row_sims.mean().item()
         top5_row_sim_std = top5_row_sims.std().item()
-        print(f"{typename} Layer {layer}: Row sim mean = {row_sim_mean:.6f}, std = {row_sim_std:.6f}. Top 5 mean = {top5_row_sim_mean:.6f}, std = {top5_row_sim_std:.6f}")
-        type2stats.setdefault(typename, []).append((row_sim_mean, row_sim_std, top5_row_sim_mean, top5_row_sim_std))
+        print(f"{comp_type} Layer {layer}: Row sim mean = {row_sim_mean:.6f}, std = {row_sim_std:.6f}. Top 5 mean = {top5_row_sim_mean:.6f}, std = {top5_row_sim_std:.6f}")
+        type2stats.setdefault(comp_type, []).append((row_sim_mean, row_sim_std, top5_row_sim_mean, top5_row_sim_std))
 
-for typename, stats in type2stats.items():
+print("\nOverall Statistics:")
+for comp_type, stats in type2stats.items():
     means, stds, top5_means, top5_stds = zip(*stats)
     mean_of_means = torch.tensor(means).mean().item()
     mean_of_stds  = torch.tensor(stds).mean().item()
     mean_of_top5_means = torch.tensor(top5_means).mean().item()
     mean_of_top5_stds  = torch.tensor(top5_stds).mean().item()
-    print(f"\n{typename} Overall: Row sim mean = {mean_of_means:.6f}, std = {mean_of_stds:.6f}. Top 5 mean = {mean_of_top5_means:.6f}, std = {mean_of_top5_stds:.6f}")
+    print(f"{comp_type} Overall: Row sim mean = {mean_of_means:.6f}, std = {mean_of_stds:.6f}. Top 5 mean = {mean_of_top5_means:.6f}, std = {mean_of_top5_stds:.6f}")
