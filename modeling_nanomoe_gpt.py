@@ -849,25 +849,41 @@ class GPT(PreTrainedModel, GenerationMixin):
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
 
-    def setup_optimizers(self, weight_decay, learning_rate, betas, device_type):
+    def setup_optimizers(self, weight_decay, learning_rate, betas, device_type, embeddings_in_own_group=True):
         # TODO: add expert config
         # filter out those that do not require grad
         param_dict = {pn: p for pn, p in self.named_parameters() if p.requires_grad}
         # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
-        # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
+        # i.e. all weight tensors in matmuls decay, all biases and layernorms don't.
         # add an extra check for "bias" string to account for bias terms in MoE layers.
-        # NOTE: for backward compatibility, embeddings (wte, wpe) are also weight decayed here.
-        # But later in train.py, they are excluded from weight decay again.
-        decay_params = [p for n, p in param_dict.items() if (p.dim() >= 2 and not n.endswith('bias'))]
         nodecay_params = [p for n, p in param_dict.items() if (p.dim() < 2 or n.endswith('bias'))]
-        optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0}
-        ]
+        
+        if embeddings_in_own_group:
+            decay_params = [p for n, p in param_dict.items() if (p.dim() >= 2 and not n.endswith('bias') and not n.endswith('wte.weight') and not n.endswith('wpe.weight'))]
+            # put embeddings in their own group with no weight decay
+            embedding_params = [p for n, p in param_dict.items() if n.endswith('wte.weight') or n.endswith('wpe.weight')]
+            optim_groups = [
+                {'params': decay_params, 'weight_decay': weight_decay},
+                {'params': nodecay_params, 'weight_decay': 0.0},
+                {'params': embedding_params, 'weight_decay': 0.0},
+            ]
+        else:
+            # NOTE: for backward compatibility, embeddings (wte, wpe) are also weight decayed here.
+            # But later in train.py, they are excluded from weight decay again.
+            decay_params = [p for n, p in param_dict.items() if (p.dim() >= 2 and not n.endswith('bias'))]
+            optim_groups = [
+                {'params': decay_params, 'weight_decay': weight_decay},
+                {'params': nodecay_params, 'weight_decay': 0.0}
+            ]
+
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
         print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
         print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        if embeddings_in_own_group:
+            num_embedding_params = sum(p.numel() for p in embedding_params)
+            print(f"num embedding parameter tensors: {len(embedding_params)}, with {num_embedding_params:,} parameters")
+
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and device_type == 'cuda'
