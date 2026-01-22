@@ -849,69 +849,108 @@ class GPT(PreTrainedModel, GenerationMixin):
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
 
-    def setup_optimizers(self, weight_decay, learning_rate, betas, device_type, embeddings_in_own_group=True):
-        # TODO: add expert config
-        decay_params = []
-        nodecay_params = []
-        embedding_params = []
-        handled_params = set()
-        # lm_head weight is tied to wte weight, so include it in embedding params
-        embedding_suffixes = ('wte.weight', 'wpe.weight', 'lm_head.weight')
+    def setup_optimizers(
+        self,
+        weight_decay,
+        learning_rate,
+        betas,
+        device_type,
+        embeddings_in_own_group=True,
+    ):
+        # ---- get a deterministic named_parameters iterator (dedup tied params) ----
+        np_sig = inspect.signature(self.named_parameters)
+        if "remove_duplicate" in np_sig.parameters:
+            named_params = self.named_parameters(remove_duplicate=True)
+        else:
+            # older torch: named_parameters already dedups duplicates (or doesn't support the flag)
+            named_params = self.named_parameters()
 
-        for name, param in self.named_parameters():
-            if not param.requires_grad:
-                continue
-            pid = id(param)
-            if pid in handled_params:
-                continue
-            handled_params.add(pid)
+        # -------------------------------------------------------------------------
+        # If embeddings_in_own_group=False: MATCH impl #1 EXACTLY (membership + order)
+        # -------------------------------------------------------------------------
+        if not embeddings_in_own_group:
+            param_dict = {pn: p for pn, p in named_params if p.requires_grad}
 
-            is_bias = name.endswith('bias')
-            is_embedding_weight = name.endswith(embedding_suffixes)
+            decay_params = [p for n, p in param_dict.items() if (p.dim() >= 2 and not n.endswith("bias"))]
+            nodecay_params = [p for n, p in param_dict.items() if (p.dim() < 2 or n.endswith("bias"))]
 
-            if embeddings_in_own_group and is_embedding_weight:
-                embedding_params.append(param)
-            elif param.dim() >= 2 and not is_bias:
-                decay_params.append(param)
+            optim_groups = [
+                {"params": decay_params, "weight_decay": weight_decay},
+                {"params": nodecay_params, "weight_decay": 0.0},
+            ]
+
+        # -------------------------------------------------------------------------
+        # embeddings_in_own_group=True: keep your dedupe-by-id + explicit embedding group
+        # -------------------------------------------------------------------------
+        else:
+            decay_params = []
+            nodecay_params = []
+            embedding_params = []
+            handled_params = set()
+
+            # lm_head weight is tied to wte weight in many GPTs; include it here when grouping embeddings
+            embedding_suffixes = ("wte.weight", "wpe.weight", "lm_head.weight")
+
+            # NOTE: reuse the same named_params iterator semantics as above
+            # but we need a fresh iterator because generators are consumed
+            if "remove_duplicate" in np_sig.parameters:
+                named_params2 = self.named_parameters(remove_duplicate=True)
             else:
-                nodecay_params.append(param)
+                named_params2 = self.named_parameters()
 
-        optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0},
-        ]
+            for name, param in named_params2:
+                if not param.requires_grad:
+                    continue
+                pid = id(param)
+                if pid in handled_params:
+                    continue
+                handled_params.add(pid)
+
+                is_bias = name.endswith("bias")
+                is_embedding_weight = name.endswith(embedding_suffixes)
+
+                if is_embedding_weight:
+                    embedding_params.append(param)
+                elif param.dim() >= 2 and not is_bias:
+                    decay_params.append(param)
+                else:
+                    nodecay_params.append(param)
+
+            optim_groups = [
+                {"params": decay_params, "weight_decay": weight_decay},
+                {"params": nodecay_params, "weight_decay": 0.0},
+                {"params": embedding_params, "weight_decay": 0.0},
+            ]
+
+        # ---- logging (optional) ----
+        num_decay_params = sum(p.numel() for p in optim_groups[0]["params"])
+        num_nodecay_params = sum(p.numel() for p in optim_groups[1]["params"])
+        print(f"num decayed parameter tensors: {len(optim_groups[0]['params'])}, with {num_decay_params:,} parameters")
+        print(f"num non-decayed parameter tensors: {len(optim_groups[1]['params'])}, with {num_nodecay_params:,} parameters")
         if embeddings_in_own_group:
-            optim_groups.append({'params': embedding_params, 'weight_decay': 0.0})
+            num_emb = sum(p.numel() for p in optim_groups[2]["params"])
+            print(f"num embedding parameter tensors: {len(optim_groups[2]['params'])}, with {num_emb:,} parameters")
 
-        num_decay_params = sum(p.numel() for p in decay_params)
-        num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
-        if embeddings_in_own_group:
-            num_embedding_params = sum(p.numel() for p in embedding_params)
-            print(f"num embedding parameter tensors: {len(embedding_params)}, with {num_embedding_params:,} parameters")
+        # ---- fused AdamW selection (same as your impl #2, but safe) ----
+        fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and device_type == "cuda"
 
-        # Create AdamW optimizer and use the fused version if it is available
-        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device_type == 'cuda'
         if use_fused:
             dtype_device_pairs = {
-                (param.dtype, str(param.device))
+                (p.dtype, str(p.device))
                 for group in optim_groups
-                for param in group['params']
+                for p in group["params"]
             }
             if len(dtype_device_pairs) > 1:
-                combos = ', '.join(
-                    f"{dtype} @ {device}" for dtype, device in sorted(
-                        dtype_device_pairs, key=lambda x: (x[1], str(x[0]))
-                    )
+                combos = ", ".join(
+                    f"{dtype} @ {dev}" for dtype, dev in sorted(dtype_device_pairs, key=lambda x: (x[1], str(x[0])))
                 )
                 print(f"Disabling fused AdamW due to mixed parameter dtypes/devices: {combos}")
                 use_fused = False
-        extra_args = dict(fused=True) if use_fused else dict()
+
+        extra_args = {"fused": True} if use_fused else {}
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
         print(f"Using fused AdamW: {use_fused}")
-
         return optimizer
 
     # TODO: integrate setup_optimizers() from nanochat, and remove the above configure_optimizers.
