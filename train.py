@@ -224,40 +224,24 @@ def separate_embeddings_in_own_group(model, optimizer, weight_decay):
         if id(p) not in pid_to_param:
             del optimizer.state[p]
 
-def debug_fused_adam_mismatch(optimizer, n=5):
-    import torch
+def debug_adam_step_device(optimizer, n=20):
     bad = 0
     for gi, g in enumerate(optimizer.param_groups):
         for pi, p in enumerate(g["params"]):
-            if p.grad is None:
-                continue
             st = optimizer.state.get(p, {})
-            ea = st.get("exp_avg", None)
-            eas = st.get("exp_avg_sq", None)
-
-            def info(x):
-                if x is None:
-                    return "None"
-                return f"dtype={x.dtype} dev={x.device} contig={x.is_contiguous()}"
-
-            ok = True
-            if ea is not None and (ea.dtype != p.dtype or ea.device != p.device):
-                ok = False
-            if eas is not None and (eas.dtype != p.dtype or eas.device != p.device):
-                ok = False
-            if p.grad.dtype != p.dtype or p.grad.device != p.device:
-                ok = False
-
-            if not ok:
-                print(f"[mismatch] group {gi} param {pi}")
-                print("  p   :", info(p))
-                print("  grad:", info(p.grad))
-                print("  exp_avg   :", info(ea))
-                print("  exp_avg_sq:", info(eas))
+            step = st.get("step", None)
+            if step is None:
+                continue
+            if not torch.is_tensor(step):
+                print(f"[step-not-tensor] group {gi} param {pi} type={type(step)} val={step}")
                 bad += 1
-                if bad >= n:
-                    return
-    print("No mismatches found (at least for params that currently have grads).")
+            else:
+                if step.device != p.device:
+                    print(f"[step-device-mismatch] group {gi} param {pi}: step={step.device}/{step.dtype} p={p.device}/{p.dtype}")
+                    bad += 1
+            if bad >= n:
+                return
+    print("No step issues found.")
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) with epoch-based training
@@ -826,7 +810,8 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 #    # Store gradient norm tensor for later logging (avoid .item() sync here)
                 #    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 # step the optimizer(s) and scaler if training in fp16
-                debug_fused_adam_mismatch(optimizers[0], n=5)
+                debug_adam_step_device(optimizers[0])
+                
                 for optimizer in optimizers:
                     scaler.step(optimizer)
                 scaler.update()
