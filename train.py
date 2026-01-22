@@ -224,72 +224,6 @@ def separate_embeddings_in_own_group(model, optimizer, weight_decay):
         if id(p) not in pid_to_param:
             del optimizer.state[p]
 
-def debug_fused_adam_exact(optimizer, limit=1):
-    import torch
-    from torch.optim.optimizer import Optimizer
-
-    for gi, group in enumerate(optimizer.param_groups):
-        params, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, steps = [], [], [], [], [], []
-
-        # print group flags (these matter)
-        print(f"[group {gi}] fused={group.get('fused', None)} capturable={group.get('capturable', None)} "
-              f"foreach={group.get('foreach', None)} amsgrad={group.get('amsgrad', None)}")
-
-        for p in group["params"]:
-            if p.grad is None:
-                continue
-            st = optimizer.state.get(p, {})
-            # AdamW fused path expects these to exist (or it will init them)
-            ea = st.get("exp_avg", None)
-            eas = st.get("exp_avg_sq", None)
-            me  = st.get("max_exp_avg_sq", None)
-            step = st.get("step", None)
-
-            # only check if state is present; otherwise Adam will init it
-            if ea is None or eas is None or step is None:
-                continue
-
-            params.append(p)
-            grads.append(p.grad)
-            exp_avgs.append(ea)
-            exp_avg_sqs.append(eas)
-            # keep list lengths aligned; use eas as placeholder when amsgrad is off
-            max_exp_avg_sqs.append(me if me is not None else eas)
-            # step must be Tensor for fused; if it isn't, that's already a clue
-            if not torch.is_tensor(step):
-                print(f"[group {gi}] step is not tensor: {type(step)} value={step}")
-                continue
-            steps.append(step)
-
-        if not params:
-            continue
-
-        try:
-            Optimizer._group_tensors_by_device_and_dtype(
-                [params, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, steps]
-            )
-        except Exception as e:
-            print("Grouping failed with:", repr(e))
-
-            # dump first few tuples
-            def tinfo(x):
-                return f"dtype={x.dtype} dev={x.device} layout={x.layout} contig={x.is_contiguous()} strides={x.stride()}"
-
-            shown = 0
-            for i in range(len(params)):
-                p, g, ea, eas, me, stp = params[i], grads[i], exp_avgs[i], exp_avg_sqs[i], max_exp_avg_sqs[i], steps[i]
-                print(f"--- offender candidate {i} ---")
-                print("p  :", tinfo(p))
-                print("g  :", tinfo(g))
-                print("ea :", tinfo(ea))
-                print("eas:", tinfo(eas))
-                print("me :", tinfo(me))
-                print("stp:", tinfo(stp))
-                shown += 1
-                if shown >= limit:
-                    break
-            raise
-
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) with epoch-based training
 # I/O
@@ -368,7 +302,8 @@ num_epochs = 1.0  # total number of epochs to train (can be fractional)
 evals_per_epoch = 10  # number of evaluations per epoch
 warmup_tokens = 500_000_000  # absolute number of tokens for warmup (500M)
 decay_frac = 0.1     # fraction of total steps used for final decay
-embeddings_in_own_group = True  # put embeddings in their own param group for optimizer
+init_embeddings_in_own_group = False  # put embeddings in their own param group for optimizer
+ckpt_embeddings_in_own_group = True
 
 # learning rate schedule
 decay_lr = True  # whether to use the warmup/stable/decay schedule
@@ -626,7 +561,7 @@ scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 # optimizer(s) - model.setup_optimizers may return a single optimizer or a list
 optimizer_result = model.setup_optimizers(weight_decay, learning_rate * lr_scale, 
                                           (beta1, beta2), device_type, 
-                                          embeddings_in_own_group=embeddings_in_own_group)
+                                          embeddings_in_own_group=init_embeddings_in_own_group)
 if isinstance(optimizer_result, (list, tuple)):
     optimizers = list(optimizer_result)
 else:
@@ -638,9 +573,14 @@ if training_state is not None:
     if not isinstance(optimizer_state_dicts, list):
         optimizer_state_dicts = [optimizer_state_dicts]
     for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
+        if ckpt_embeddings_in_own_group and not init_embeddings_in_own_group:
+            # Need to reorganize optimizer param groups to match the checkpoint structure
+            separate_embeddings_in_own_group(model, optimizer, weight_decay)
+        # Otherwise, param group structure matches, can load directly            
         optimizer.load_state_dict(state_dict)
         
-        if not embeddings_in_own_group:
+        # If ckpt is still old grouping, reorganize to the desired current grouping (embeddings in own group).
+        if not ckpt_embeddings_in_own_group:
             separate_embeddings_in_own_group(model, optimizer, weight_decay)
 
         # Discard gradient accumulation buffers if any, to avoid OOM.
@@ -847,7 +787,6 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 #    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 # step the optimizer(s) and scaler if training in fp16
 
-                debug_fused_adam_exact(optimizers[0], limit=2)
                 for optimizer in optimizers:
                     scaler.step(optimizer)
                 scaler.update()
