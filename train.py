@@ -302,8 +302,7 @@ num_epochs = 1.0  # total number of epochs to train (can be fractional)
 evals_per_epoch = 10  # number of evaluations per epoch
 warmup_tokens = 500_000_000  # absolute number of tokens for warmup (500M)
 decay_frac = 0.1     # fraction of total steps used for final decay
-init_embeddings_in_own_group = False  # put embeddings in their own param group for optimizer
-ckpt_embeddings_in_own_group = True
+load_optimizer_state = True
 
 # learning rate schedule
 decay_lr = True  # whether to use the warmup/stable/decay schedule
@@ -561,28 +560,19 @@ scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 # optimizer(s) - model.setup_optimizers may return a single optimizer or a list
 optimizer_result = model.setup_optimizers(weight_decay, learning_rate * lr_scale, 
                                           (beta1, beta2), device_type, 
-                                          embeddings_in_own_group=init_embeddings_in_own_group)
+                                          embeddings_in_own_group=True)
 if isinstance(optimizer_result, (list, tuple)):
     optimizers = list(optimizer_result)
 else:
     optimizers = [optimizer_result]
 
 # Load optimizer and scaler state if resuming
-if training_state is not None:
+if load_optimizer_state and training_state is not None:
     optimizer_state_dicts = training_state['optimizer_state_dict']
     if not isinstance(optimizer_state_dicts, list):
         optimizer_state_dicts = [optimizer_state_dicts]
     for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
-        if ckpt_embeddings_in_own_group and not init_embeddings_in_own_group:
-            # Need to reorganize optimizer param groups to match the checkpoint structure
-            separate_embeddings_in_own_group(model, optimizer, weight_decay)
-        # Otherwise, param group structure matches, can load directly            
-        optimizer.load_state_dict(state_dict)
-        
-        # If ckpt is still old grouping, reorganize to the desired current grouping (embeddings in own group).
-        if not ckpt_embeddings_in_own_group:
-            separate_embeddings_in_own_group(model, optimizer, weight_decay)
-
+        optimizer.load_state_dict(state_dict)        
         # Discard gradient accumulation buffers if any, to avoid OOM.
         optimizer.zero_grad(set_to_none=True)
     
