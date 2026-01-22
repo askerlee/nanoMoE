@@ -10,7 +10,7 @@ class MOEManager:
         self.router_ortho_losses = []
         self.experts_ortho_losses = []
         self.gate_output_losses = []
-        self.gate_diversity_losses = []
+        self.projs_diversity_losses = []
         self.ortho_loss_start_frac = ortho_loss_start_frac
 
     def reset_aux_loss(self):
@@ -28,8 +28,8 @@ class MOEManager:
     def reset_gate_output_loss(self):
         self.gate_output_losses = []
 
-    def reset_gate_diversity_loss(self):
-        self.gate_diversity_losses = []
+    def reset_projs_diversity_loss(self):
+        self.projs_diversity_losses = []
 
     def add_aux_loss(self, loss):
         self.aux_losses.append(loss)
@@ -46,8 +46,8 @@ class MOEManager:
     def add_gate_output_loss(self, loss):
         self.gate_output_losses.append(loss)
 
-    def add_gate_diversity_loss(self, loss):
-        self.gate_diversity_losses.append(loss)
+    def add_projs_diversity_loss(self, loss):
+        self.projs_diversity_losses.append(loss)
 
     def aggregate_aux_loss(self):
         return sum(self.aux_losses)
@@ -69,8 +69,8 @@ class MOEManager:
         start_layer = int(len(self.gate_output_losses) * self.ortho_loss_start_frac)
         return sum(self.gate_output_losses[start_layer:])
 
-    def aggregate_gate_diversity_loss(self):
-        start_layer = int(len(self.gate_diversity_losses) * self.ortho_loss_start_frac)
-        return sum(self.gate_diversity_losses[start_layer:])
+    def aggregate_projs_diversity_loss(self):
+        start_layer = int(len(self.projs_diversity_losses) * self.ortho_loss_start_frac)
+        return sum(self.projs_diversity_losses[start_layer:])
     
 MANAGER = MOEManager(ortho_loss_start_frac=0.)

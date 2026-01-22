@@ -152,7 +152,7 @@ router_ortho_neg_corr_weight = 1  # weight for negative correlations in router-o
 # So its weight is set higher to have a meaningful effect.
 experts_ortho_loss_weight = 0.01  
 gate_output_loss_weight = 0.0001
-gate_diversity_loss_weight = 0.01
+projs_diversity_loss_weight = 0.01
 train_capacity = 1.25
 eval_capacity = 3.0
 # min_capacity: minimum number of tokens per expert. 
@@ -355,7 +355,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   router_ortho_neg_corr_weight=router_ortho_neg_corr_weight,
                   experts_ortho_loss_weight=experts_ortho_loss_weight,
                   gate_output_loss_weight=gate_output_loss_weight,
-                  gate_diversity_loss_weight=gate_diversity_loss_weight,
+                  projs_diversity_loss_weight=projs_diversity_loss_weight,
                   train_capacity=train_capacity,
                   eval_capacity=eval_capacity, min_capacity=min_capacity, 
                   stride=stride, moe_start_layer=moe_start_layer,
@@ -494,7 +494,7 @@ if training_state is not None:
             grp = defaults.copy()
             if ref_pid is not None and ref_pid in pid_to_options:
                 grp.update(pid_to_options[ref_pid])
-            grp["params"] = [pid_to_param[pid] for pid in pids]
+            grp["params"] = [ pid_to_param[pid] for pid in pids ]
             grp["weight_decay"] = weight_decay
             return grp
 
@@ -538,7 +538,7 @@ def estimate_loss(val_loader):
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0, 
                    'gate_output_loss': 0,
-                   'gate_diversity_loss': 0
+                   'projs_diversity_loss': 0
                 }
     
     num_eval_iters = len(val_loader)
@@ -807,7 +807,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     "train/router_ortho_loss_step": losses['router_ortho_loss'],
                     "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
                     "train/gate_output_loss_step": losses['gate_output_loss'],
-                    "train/gate_diversity_loss_step": losses['gate_diversity_loss'],
+                    "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
                     "lr": lr,
                     "mfu": running_mfu*100,
                     "tok_per_sec": running_tokens_per_sec,
