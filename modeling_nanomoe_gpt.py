@@ -483,7 +483,7 @@ class MOELayer(nn.Module):
     def compute_router_ortho_loss(self):
         if not self.use_qwen3_moe_mlp:
             # Only apply orthogonality loss when using Qwen3-style MoE MLPs
-            return torch.tensor(0.0, device=self.router.w_g.weight.device)
+            return 0
         else:
             # Compute orthogonality loss between router weight vectors and expert gate projection vectors
             router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
@@ -508,7 +508,7 @@ class MOELayer(nn.Module):
 
     # use_rand_estimate: speed up diversity loss computation with stochastic estimate.
     def compute_projs_diversity_loss(self, use_rand_estimate=True, num_rand_probes=1):
-        loss = torch.tensor(0.0, device=self.router.w_g.weight.device)
+        loss = 0
 
         if not self.use_qwen3_moe_mlp:
             # Only apply orthogonality loss when using Qwen3-style MoE MLPs
