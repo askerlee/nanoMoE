@@ -220,11 +220,45 @@ def separate_embeddings_in_own_group(model, optimizer, weight_decay):
     # After reorganizing groups, we need to rebuild the optimizer state to match the new structure
     # The fused kernels require strict dtype/device matching between params and their states
     # Clear any state for parameters that might have mismatched tensors
-    for pid in list(optimizer.state.keys()):
-        if pid not in pid_to_param:
-            # Remove state for params no longer in optimizer
-            del optimizer.state[pid]
-    
+    for p in list(optimizer.state.keys()):
+        if id(p) not in pid_to_param:
+            del optimizer.state[p]
+
+def debug_fused_adam_mismatch(optimizer, n=5):
+    import torch
+    bad = 0
+    for gi, g in enumerate(optimizer.param_groups):
+        for pi, p in enumerate(g["params"]):
+            if p.grad is None:
+                continue
+            st = optimizer.state.get(p, {})
+            ea = st.get("exp_avg", None)
+            eas = st.get("exp_avg_sq", None)
+
+            def info(x):
+                if x is None:
+                    return "None"
+                return f"dtype={x.dtype} dev={x.device} contig={x.is_contiguous()}"
+
+            ok = True
+            if ea is not None and (ea.dtype != p.dtype or ea.device != p.device):
+                ok = False
+            if eas is not None and (eas.dtype != p.dtype or eas.device != p.device):
+                ok = False
+            if p.grad.dtype != p.dtype or p.grad.device != p.device:
+                ok = False
+
+            if not ok:
+                print(f"[mismatch] group {gi} param {pi}")
+                print("  p   :", info(p))
+                print("  grad:", info(p.grad))
+                print("  exp_avg   :", info(ea))
+                print("  exp_avg_sq:", info(eas))
+                bad += 1
+                if bad >= n:
+                    return
+    print("No mismatches found (at least for params that currently have grads).")
+
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) with epoch-based training
 # I/O
@@ -792,6 +826,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 #    # Store gradient norm tensor for later logging (avoid .item() sync here)
                 #    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 # step the optimizer(s) and scaler if training in fp16
+                debug_fused_adam_mismatch(optimizers[0], n=5)
                 for optimizer in optimizers:
                     scaler.step(optimizer)
                 scaler.update()
