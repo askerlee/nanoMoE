@@ -514,7 +514,7 @@ class MOELayer(nn.Module):
             # Only apply orthogonality loss when using Qwen3-style MoE MLPs
             return loss
 
-        for proj_name in ('gate_proj', 'c_proj'):
+        for proj_name in ('gate_proj', 'c_fc'):
             # G: [n_exp, n_embd, intermediate_size]
             G = getattr(self.experts, proj_name)
             # Row-normalize: normalize each row vector over intermediate_size
