@@ -575,6 +575,17 @@ if training_state is not None:
     for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
         optimizer.load_state_dict(state_dict)
         
+        # Move optimizer state tensors to the correct device and ensure dtype matches parameters
+        # This is critical for fused optimizers which require strict dtype/device matching
+        for param_group in optimizer.param_groups:
+            for param in param_group['params']:
+                if param in optimizer.state:
+                    state = optimizer.state[param]
+                    for key, value in state.items():
+                        if isinstance(value, torch.Tensor):
+                            # Move state tensor to same device/dtype as the parameter
+                            state[key] = value.to(device=param.device, dtype=param.dtype)
+        
         if not embeddings_in_own_group:
             separate_embeddings_in_own_group(model, optimizer, weight_decay)
 
