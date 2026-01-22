@@ -100,6 +100,131 @@ def build_train_loader(dataset, sampler, batch_size, num_workers, device_type, s
     )
 
 
+# estimate validation loss using many batches
+@torch.no_grad()
+def estimate_loss(model, val_loader):
+    model.eval()
+    
+    val_losses = { 'ntp_loss': 0,
+                   'aux_loss': 0,
+                   'router_z_loss': 0,
+                   'router_ortho_loss': 0,
+                   'experts_ortho_loss': 0, 
+                   'gate_output_loss': 0,
+                   'projs_diversity_loss': 0
+                }
+    
+    num_eval_iters = len(val_loader)
+    for key in val_losses:
+        val_losses[key] = torch.zeros(num_eval_iters, device=device)
+    
+    for k, (X, Y) in enumerate(val_loader):
+        if k >= num_eval_iters:
+            break
+        
+        # Move to device
+        if device_type == 'cuda':
+            X, Y = X.to(device, non_blocking=True), Y.to(device, non_blocking=True)
+        else:
+            X, Y = X.to(device), Y.to(device)
+            
+        with ctx:
+            _, loss, losses = model(input_ids=X, labels=Y, return_dict=False)
+        
+        # All losses other than ntp_loss are actually zero, since in modeling_nanomoe_gpt.py,
+        # the losses are computed only if self.training is True.
+        for key in val_losses:
+            val_losses[key][k] = losses[key]
+    
+    model.train()
+    return {key: val_losses[key].mean() for key in val_losses}
+
+# learning rate scheduler (warmup -> stable -> decay to zero)
+def get_lr(learning_rate: float, it: int) -> float:
+    """Compute learning rate at iteration it."""
+    if it < warmup_iters:
+        return learning_rate * (it + 1) / float(warmup_iters + 1)
+    if it < decay_start:
+        return learning_rate
+    if it >= total_iters:
+        return 0.0
+    decay_ratio = (it - decay_start) / float(max(1, decay_iters))
+    return learning_rate * (1 - math.sqrt(decay_ratio))
+
+def separate_embeddings_in_own_group(model, optimizer, weight_decay):
+    """Separate embedding parameters into their own parameter group in the optimizer."""
+    # Snapshot original groups/options
+    old_groups = optimizer.param_groups
+    # Reorganize param_groups: separate embeddings from other parameters
+    # Build a mapping of parameter id to name
+    param_name_map = {id(p): n for n, p in model.named_parameters()}
+
+    # Map param_id -> old_group_options (so we can preserve lr/betas/eps/etc)
+    pid_to_options = {}
+    pid_to_param   = {}
+    for g in old_groups:
+        options = {k: v for k, v in g.items() if k != "params"}
+        for p in g["params"]:
+            pid = id(p)
+            pid_to_param[pid] = p
+            # if a param appears in multiple groups (shouldn't), first wins
+            pid_to_options.setdefault(pid, options)
+
+    # Classify params
+    embedding_pids = set()
+    decay_pids = set()
+    nodecay_pids = set()
+
+    for pid, p in pid_to_param.items():
+        name = param_name_map.get(pid, "")
+        is_emb = ("wte" in name) or ("wpe" in name)
+        if is_emb:
+            embedding_pids.add(pid)
+            continue
+
+        # Use original grouping to decide decay vs no-decay
+        options = pid_to_options.get(pid, {})
+        if options.get("weight_decay", 0.0) > 0:
+            decay_pids.add(pid)
+        else:
+            nodecay_pids.add(pid)
+
+    # Helper to build group dict with preserved options
+    defaults = optimizer.defaults.copy()
+
+    def make_group(pids, weight_decay, ref_pid=None):
+        if not pids:
+            return None
+        # start from optimizer defaults, then override with some reference group's opts if available
+        grp = defaults.copy()
+        if ref_pid is not None and ref_pid in pid_to_options:
+            grp.update(pid_to_options[ref_pid])
+        grp["params"] = [ pid_to_param[pid] for pid in pids ]
+        grp["weight_decay"] = weight_decay
+        return grp
+
+    # Pick reference pids to preserve lr/betas/etc consistent with old groups
+    ref_decay = next(iter(decay_pids), None)
+    ref_nodecay = next(iter(nodecay_pids), None)
+    ref_emb = next(iter(embedding_pids), None)
+
+    new_groups = []
+    g = make_group(decay_pids, weight_decay, ref_decay)
+    if g: new_groups.append(g)
+    g = make_group(nodecay_pids, 0.0, ref_nodecay)
+    if g: new_groups.append(g)
+    g = make_group(embedding_pids, 0.0, ref_emb)
+    if g: new_groups.append(g)
+
+    optimizer.param_groups = new_groups    
+    # After reorganizing groups, we need to rebuild the optimizer state to match the new structure
+    # The fused kernels require strict dtype/device matching between params and their states
+    # Clear any state for parameters that might have mismatched tensors
+    for pid in list(optimizer.state.keys()):
+        if pid not in pid_to_param:
+            # Remove state for params no longer in optimizer
+            del optimizer.state[pid]
+    
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) with epoch-based training
 # I/O
@@ -178,6 +303,7 @@ num_epochs = 1.0  # total number of epochs to train (can be fractional)
 evals_per_epoch = 10  # number of evaluations per epoch
 warmup_tokens = 500_000_000  # absolute number of tokens for warmup (500M)
 decay_frac = 0.1     # fraction of total steps used for final decay
+embeddings_in_own_group = True  # put embeddings in their own param group for optimizer
 
 # learning rate schedule
 decay_lr = True  # whether to use the warmup/stable/decay schedule
@@ -433,15 +559,13 @@ else:
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer(s) - model.setup_optimizers may return a single optimizer or a list
-optimizer_result = model.setup_optimizers(weight_decay, learning_rate * lr_scale, (beta1, beta2), device_type)
+optimizer_result = model.setup_optimizers(weight_decay, learning_rate * lr_scale, 
+                                          (beta1, beta2), device_type, 
+                                          embeddings_in_own_group=embeddings_in_own_group)
 if isinstance(optimizer_result, (list, tuple)):
     optimizers = list(optimizer_result)
 else:
     optimizers = [optimizer_result]
-
-# Reorganize param_groups: separate embeddings from other parameters
-# Build a mapping of parameter id to name
-param_name_map = {id(p): n for n, p in model.named_parameters()}
 
 # Load optimizer and scaler state if resuming
 if training_state is not None:
@@ -450,68 +574,10 @@ if training_state is not None:
         optimizer_state_dicts = [optimizer_state_dicts]
     for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
         optimizer.load_state_dict(state_dict)
-            
-        # Snapshot original groups/options
-        old_groups = optimizer.param_groups
+        
+        if not embeddings_in_own_group:
+            separate_embeddings_in_own_group(model, optimizer, weight_decay)
 
-        # Map param_id -> old_group_options (so we can preserve lr/betas/eps/etc)
-        pid_to_options = {}
-        pid_to_param   = {}
-        for g in old_groups:
-            options = {k: v for k, v in g.items() if k != "params"}
-            for p in g["params"]:
-                pid = id(p)
-                pid_to_param[pid] = p
-                # if a param appears in multiple groups (shouldn't), first wins
-                pid_to_options.setdefault(pid, options)
-
-        # Classify params
-        embedding_pids = set()
-        decay_pids = set()
-        nodecay_pids = set()
-
-        for pid, p in pid_to_param.items():
-            name = param_name_map.get(pid, "")
-            is_emb = ("wte" in name) or ("wpe" in name)
-            if is_emb:
-                embedding_pids.add(pid)
-                continue
-
-            # Use original grouping to decide decay vs no-decay
-            options = pid_to_options.get(pid, {})
-            if options.get("weight_decay", 0.0) and options.get("weight_decay", 0.0) > 0:
-                decay_pids.add(pid)
-            else:
-                nodecay_pids.add(pid)
-
-        # Helper to build group dict with preserved options
-        defaults = optimizer.defaults.copy()
-
-        def make_group(pids, weight_decay, ref_pid=None):
-            if not pids:
-                return None
-            # start from optimizer defaults, then override with some reference group's opts if available
-            grp = defaults.copy()
-            if ref_pid is not None and ref_pid in pid_to_options:
-                grp.update(pid_to_options[ref_pid])
-            grp["params"] = [ pid_to_param[pid] for pid in pids ]
-            grp["weight_decay"] = weight_decay
-            return grp
-
-        # Pick reference pids to preserve lr/betas/etc consistent with old groups
-        ref_decay = next(iter(decay_pids), None)
-        ref_nodecay = next(iter(nodecay_pids), None)
-        ref_emb = next(iter(embedding_pids), None)
-
-        new_groups = []
-        g = make_group(decay_pids, weight_decay, ref_decay)
-        if g: new_groups.append(g)
-        g = make_group(nodecay_pids, 0.0, ref_nodecay)
-        if g: new_groups.append(g)
-        g = make_group(embedding_pids, 0.0, ref_emb)
-        if g: new_groups.append(g)
-
-        optimizer.param_groups = new_groups
         # Discard gradient accumulation buffers if any, to avoid OOM.
         optimizer.zero_grad(set_to_none=True)
     
@@ -526,57 +592,6 @@ if compile:
 # wrap model into DDP container
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
-
-# estimate validation loss using many batches
-@torch.no_grad()
-def estimate_loss(val_loader):
-    model.eval()
-    
-    val_losses = { 'ntp_loss': 0,
-                   'aux_loss': 0,
-                   'router_z_loss': 0,
-                   'router_ortho_loss': 0,
-                   'experts_ortho_loss': 0, 
-                   'gate_output_loss': 0,
-                   'projs_diversity_loss': 0
-                }
-    
-    num_eval_iters = len(val_loader)
-    for key in val_losses:
-        val_losses[key] = torch.zeros(num_eval_iters, device=device)
-    
-    for k, (X, Y) in enumerate(val_loader):
-        if k >= num_eval_iters:
-            break
-        
-        # Move to device
-        if device_type == 'cuda':
-            X, Y = X.to(device, non_blocking=True), Y.to(device, non_blocking=True)
-        else:
-            X, Y = X.to(device), Y.to(device)
-            
-        with ctx:
-            _, loss, losses = model(input_ids=X, labels=Y, return_dict=False)
-        
-        # All losses other than ntp_loss are actually zero, since in modeling_nanomoe_gpt.py,
-        # the losses are computed only if self.training is True.
-        for key in val_losses:
-            val_losses[key][k] = losses[key]
-    
-    model.train()
-    return {key: val_losses[key].mean() for key in val_losses}
-
-# learning rate scheduler (warmup -> stable -> decay to zero)
-def get_lr(learning_rate: float, it: int) -> float:
-    """Compute learning rate at iteration it."""
-    if it < warmup_iters:
-        return learning_rate * (it + 1) / float(warmup_iters + 1)
-    if it < decay_start:
-        return learning_rate
-    if it >= total_iters:
-        return 0.0
-    decay_ratio = (it - decay_start) / float(max(1, decay_iters))
-    return learning_rate * (1 - math.sqrt(decay_ratio))
 
 # logging
 if wandb_log and master_process:
@@ -679,7 +694,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
         # evaluate the loss on train/val sets and write checkpoints
         if global_iter > 0 and global_iter % eval_every_n_iters == 0 and master_process:
             eval_count += 1
-            val_losses = estimate_loss(val_loader)
+            val_losses = estimate_loss(model, val_loader)
             print(f"epoch {epoch + 1}, step {global_iter}: val loss {val_losses['ntp_loss']:.4f}")
             if wandb_log:
                 wandb.log({
@@ -735,7 +750,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
 
         if eval_only and epoch == 0 and batch_idx == 0:
             # Run one evaluation then exit
-            val_losses = estimate_loss(val_loader)
+            val_losses = estimate_loss(model, val_loader)
             print(f"eval_only mode: val loss {val_losses['ntp_loss']:.4f}")
             break
 
