@@ -224,24 +224,71 @@ def separate_embeddings_in_own_group(model, optimizer, weight_decay):
         if id(p) not in pid_to_param:
             del optimizer.state[p]
 
-def debug_adam_step_device(optimizer, n=20):
-    bad = 0
-    for gi, g in enumerate(optimizer.param_groups):
-        for pi, p in enumerate(g["params"]):
-            st = optimizer.state.get(p, {})
-            step = st.get("step", None)
-            if step is None:
+def debug_fused_adam_exact(optimizer, limit=1):
+    import torch
+    from torch.optim.optimizer import Optimizer
+
+    for gi, group in enumerate(optimizer.param_groups):
+        params, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, steps = [], [], [], [], [], []
+
+        # print group flags (these matter)
+        print(f"[group {gi}] fused={group.get('fused', None)} capturable={group.get('capturable', None)} "
+              f"foreach={group.get('foreach', None)} amsgrad={group.get('amsgrad', None)}")
+
+        for p in group["params"]:
+            if p.grad is None:
                 continue
+            st = optimizer.state.get(p, {})
+            # AdamW fused path expects these to exist (or it will init them)
+            ea = st.get("exp_avg", None)
+            eas = st.get("exp_avg_sq", None)
+            me  = st.get("max_exp_avg_sq", None)
+            step = st.get("step", None)
+
+            # only check if state is present; otherwise Adam will init it
+            if ea is None or eas is None or step is None:
+                continue
+
+            params.append(p)
+            grads.append(p.grad)
+            exp_avgs.append(ea)
+            exp_avg_sqs.append(eas)
+            # keep list lengths aligned; use eas as placeholder when amsgrad is off
+            max_exp_avg_sqs.append(me if me is not None else eas)
+            # step must be Tensor for fused; if it isn't, that's already a clue
             if not torch.is_tensor(step):
-                print(f"[step-not-tensor] group {gi} param {pi} type={type(step)} val={step}")
-                bad += 1
-            else:
-                if step.device != p.device:
-                    print(f"[step-device-mismatch] group {gi} param {pi}: step={step.device}/{step.dtype} p={p.device}/{p.dtype}")
-                    bad += 1
-            if bad >= n:
-                return
-    print("No step issues found.")
+                print(f"[group {gi}] step is not tensor: {type(step)} value={step}")
+                continue
+            steps.append(step)
+
+        if not params:
+            continue
+
+        try:
+            Optimizer._group_tensors_by_device_and_dtype(
+                [params, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, steps]
+            )
+        except Exception as e:
+            print("Grouping failed with:", repr(e))
+
+            # dump first few tuples
+            def tinfo(x):
+                return f"dtype={x.dtype} dev={x.device} layout={x.layout} contig={x.is_contiguous()} strides={x.stride()}"
+
+            shown = 0
+            for i in range(len(params)):
+                p, g, ea, eas, me, stp = params[i], grads[i], exp_avgs[i], exp_avg_sqs[i], max_exp_avg_sqs[i], steps[i]
+                print(f"--- offender candidate {i} ---")
+                print("p  :", tinfo(p))
+                print("g  :", tinfo(g))
+                print("ea :", tinfo(ea))
+                print("eas:", tinfo(eas))
+                print("me :", tinfo(me))
+                print("stp:", tinfo(stp))
+                shown += 1
+                if shown >= limit:
+                    break
+            raise
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) with epoch-based training
@@ -593,17 +640,6 @@ if training_state is not None:
     for optimizer, state_dict in zip(optimizers, optimizer_state_dicts):
         optimizer.load_state_dict(state_dict)
         
-        # Move optimizer state tensors to the correct device and ensure dtype matches parameters
-        # This is critical for fused optimizers which require strict dtype/device matching
-        for param_group in optimizer.param_groups:
-            for param in param_group['params']:
-                if param in optimizer.state:
-                    state = optimizer.state[param]
-                    for key, value in state.items():
-                        if isinstance(value, torch.Tensor):
-                            # Move state tensor to same device/dtype as the parameter
-                            state[key] = value.to(device=param.device, dtype=param.dtype)
-        
         if not embeddings_in_own_group:
             separate_embeddings_in_own_group(model, optimizer, weight_decay)
 
@@ -810,8 +846,8 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 #    # Store gradient norm tensor for later logging (avoid .item() sync here)
                 #    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 # step the optimizer(s) and scaler if training in fp16
-                debug_adam_step_device(optimizers[0])
-                
+
+                debug_fused_adam_exact(optimizers[0], limit=2)
                 for optimizer in optimizers:
                     scaler.step(optimizer)
                 scaler.update()
