@@ -612,6 +612,7 @@ if ddp:
 if wandb_log and master_process:
     import wandb
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
+    wandb.define_metric("tokens_seen")
     wandb.define_metric("train/*", step_metric="tokens_seen")
     wandb.define_metric("val/*", step_metric="tokens_seen")
 
@@ -723,7 +724,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                         log_data["val/drop_rate_0_step"] = drop_rates[0]
                     if np.size(drop_rates) >= 2:
                         log_data["val/drop_rate_1_step"] = drop_rates[1]
-                wandb.log(log_data, step=global_iter)
+                wandb.log(log_data)
             if save_ckpt_every_n_evals != -1 and (val_losses['ntp_loss'] < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
                 best_val_loss = val_losses['ntp_loss']
                 
@@ -859,7 +860,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                         log_data["train/drop_rate_0_step"] = float(drop_rates[0])
                     if len(drop_rates) >= 2:
                         log_data["train/drop_rate_1_step"] = float(drop_rates[1])
-                wandb.log(log_data, step=global_iter)
+                wandb.log(log_data)
             MANAGER.collect_drop_rate_per_ks = False
         
         # Profiler step
