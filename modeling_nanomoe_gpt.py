@@ -845,43 +845,44 @@ class GPT(PreTrainedModel, GenerationMixin):
         if labels is not None:
             # Compute loss when labels are provided
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-1)
-            losses['ntp_loss'] = loss.item()
+            losses['ntp_loss'] = loss.detach()
 
             # add the auxiliary load balancing loss and router z loss to the main loss
             if self.config.n_exp > 1 and self.config.use_aux_loss:
                 aux_loss = MANAGER.aggregate("aux_loss")
                 loss += self.config.aux_loss_weight * aux_loss
-                losses['aux_loss'] = aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
+                losses['aux_loss'] = aux_loss.detach() if isinstance(aux_loss, torch.Tensor) else aux_loss
                 MANAGER.reset("aux_loss")
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
                 router_z_loss = MANAGER.aggregate("router_z_loss")
                 loss += self.config.router_z_loss_weight * router_z_loss
-                losses['router_z_loss'] = router_z_loss.item() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
+                losses['router_z_loss'] = router_z_loss.detach() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
                 MANAGER.reset("router_z_loss")
             if self.config.n_exp > 1 and self.config.use_router_ortho_loss:
                 router_ortho_loss = MANAGER.aggregate("router_ortho_loss")
                 loss += self.config.router_ortho_loss_weight * router_ortho_loss 
-                losses['router_ortho_loss'] = router_ortho_loss.item() if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
+                losses['router_ortho_loss'] = router_ortho_loss.detach() if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
                 MANAGER.reset("router_ortho_loss")
                 projs_diversity_loss = MANAGER.aggregate("projs_diversity_loss")
                 loss += self.config.projs_diversity_loss_weight * projs_diversity_loss
-                losses['projs_diversity_loss'] = projs_diversity_loss.item() if isinstance(projs_diversity_loss, torch.Tensor) else projs_diversity_loss
+                losses['projs_diversity_loss'] = projs_diversity_loss.detach() if isinstance(projs_diversity_loss, torch.Tensor) else projs_diversity_loss
                 MANAGER.reset("projs_diversity_loss")
             if self.config.n_exp > 1 and self.config.use_experts_ortho_loss:
                 experts_ortho_loss = MANAGER.aggregate("experts_ortho_loss")
                 loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
-                losses['experts_ortho_loss'] = experts_ortho_loss.item() if isinstance(experts_ortho_loss, torch.Tensor) else experts_ortho_loss
+                losses['experts_ortho_loss'] = experts_ortho_loss.detach() if isinstance(experts_ortho_loss, torch.Tensor) else experts_ortho_loss
                 MANAGER.reset("experts_ortho_loss")
             if self.config.n_exp > 1 and self.config.use_gate_output_loss:
                 gate_output_loss = MANAGER.aggregate("gate_output_loss")
                 loss += self.config.gate_output_loss_weight * gate_output_loss
-                losses['gate_output_loss'] = gate_output_loss.item() if isinstance(gate_output_loss, torch.Tensor) else gate_output_loss
+                losses['gate_output_loss'] = gate_output_loss.detach() if isinstance(gate_output_loss, torch.Tensor) else gate_output_loss
                 MANAGER.reset("gate_output_loss")
         else:
             # No labels provided - inference mode
             loss = None
 
-        losses['drop_rate_per_ks'] = MANAGER.aggregate("drop_rate_per_ks")
+        drop_rate_per_ks = MANAGER.aggregate("drop_rate_per_ks")
+        losses['drop_rate_per_ks'] = drop_rate_per_ks.detach() if drop_rate_per_ks is not None else None
         MANAGER.reset("drop_rate_per_ks")
         
         if not return_dict:

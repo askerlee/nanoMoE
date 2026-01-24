@@ -118,9 +118,9 @@ def estimate_loss(model, val_loader):
     num_eval_iters = len(val_loader)
     for key in val_losses:
         if key != 'drop_rate_per_ks':
-            val_losses[key] = torch.zeros(num_eval_iters, device=device)
+            val_losses[key] = np.zeros(num_eval_iters)
         else:
-            val_losses[key] = torch.zeros((num_eval_iters, moe_top_k), device=device)
+            val_losses[key] = np.zeros((num_eval_iters, moe_top_k))
     
     for k, (X, Y) in enumerate(val_loader):
         if k >= num_eval_iters:
@@ -140,16 +140,19 @@ def estimate_loss(model, val_loader):
         for key in val_losses:
             if key == 'drop_rate_per_ks':
                 if losses[key] is None:
-                    val_losses[key][k] = torch.zeros(moe_top_k, device=device)
+                    val_losses[key][k] = np.zeros(moe_top_k)
                 else:
-                    val_losses[key][k] = losses[key]
+                    drop_rates = losses[key]
+                    if torch.is_tensor(drop_rates):
+                        drop_rates = drop_rates.detach().float().cpu().numpy()
+                    val_losses[key][k] = drop_rates
             else:
                 val_losses[key][k] = losses[key]
     
     model.train()
     # If key != 'drop_rate_per_ks', the mean over eval iters is a scalar.
     # Otherwise the mean over eval iters is a vector of size moe_top_k.
-    return { key: val_losses[key].mean(dim=0) for key in val_losses }
+    return { key: val_losses[key].mean(axis=0) for key in val_losses }
 
 # learning rate scheduler (warmup -> stable -> decay to zero)
 def get_lr(learning_rate: float, it: int) -> float:
@@ -711,10 +714,10 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 }
                 drop_rates = val_losses['drop_rate_per_ks']
                 if drop_rates is not None:
-                    if drop_rates.numel() >= 1:
-                        log_data["val/drop_rate_0_step"] = drop_rates[0].item()
-                    if drop_rates.numel() >= 2:
-                        log_data["val/drop_rate_1_step"] = drop_rates[1].item()
+                    if np.size(drop_rates) >= 1:
+                        log_data["val/drop_rate_0_step"] = drop_rates[0]
+                    if np.size(drop_rates) >= 2:
+                        log_data["val/drop_rate_1_step"] = drop_rates[1]
                 wandb.log(log_data, step=global_iter)
             if save_ckpt_every_n_evals != -1 and (val_losses['ntp_loss'] < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
                 best_val_loss = val_losses['ntp_loss']
@@ -827,7 +830,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             })
             
             if wandb_log:
-                wandb.log({
+                log_data = {
                     "train/loss_step": losses['ntp_loss'],
                     "train/grad_norm": grad_normf,
                     "train/aux_loss_step": losses['aux_loss'],
@@ -836,15 +839,21 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
                     "train/gate_output_loss_step": losses['gate_output_loss'],
                     "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
-                    # Only log the drop rates for top-1 and top-2 experts.
-                    "train/drop_rate_0_step": losses['drop_rate_per_ks'][0],
-                    "train/drop_rate_1_step": losses['drop_rate_per_ks'][1],
                     "lr": lr,
                     "mfu": running_mfu*100,
                     "tok_per_sec": running_tokens_per_sec,
                     "time_ms": dt*1000,
                     "tokens_seen": persist_global_iter * batch_size * block_size,
-                }, step=global_iter)
+                }
+                drop_rates = losses['drop_rate_per_ks']
+                if drop_rates is not None:
+                    if torch.is_tensor(drop_rates):
+                        drop_rates = drop_rates.detach().float().cpu()
+                    if np.size(drop_rates) >= 1:
+                        log_data["train/drop_rate_0_step"] = float(drop_rates[0])
+                    if np.size(drop_rates) >= 2:
+                        log_data["train/drop_rate_1_step"] = float(drop_rates[1])
+                wandb.log(log_data, step=global_iter)
         
         # Profiler step
         if profiler is not None:
