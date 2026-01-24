@@ -881,6 +881,7 @@ class GPT(PreTrainedModel, GenerationMixin):
             loss = None
 
         losses['drop_rate_per_ks'] = MANAGER.aggregate("drop_rate_per_ks")
+        MANAGER.reset("drop_rate_per_ks")
         
         if not return_dict:
             # Legacy return format: (logits, loss, losses)
