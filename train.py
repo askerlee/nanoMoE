@@ -138,7 +138,13 @@ def estimate_loss(model, val_loader):
         # All losses other than ntp_loss are actually zero, since in modeling_nanomoe_gpt.py,
         # the losses are computed only if self.training is True.
         for key in val_losses:
-            val_losses[key][k] = losses[key]
+            if key == 'drop_rate_per_ks':
+                if losses[key] is None:
+                    val_losses[key][k] = np.zeros(moe_top_k)
+                else:
+                    val_losses[key][k] = losses[key]
+            else:
+                val_losses[key][k] = losses[key]
     
     model.train()
     # If key != 'drop_rate_per_ks', the mean over eval iters is a scalar.
@@ -698,12 +704,18 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             val_losses = estimate_loss(model, val_loader)
             print(f"epoch {epoch + 1}, step {global_iter}: val loss {val_losses['ntp_loss']:.4f}")
             if wandb_log:
-                wandb.log({
+                log_data = {
                     "val/loss": val_losses['ntp_loss'],
                     "val/eval_count": eval_count,
-                    "val/drop_rate_0_step": val_losses['drop_rate_per_ks'][0],
-                    "val/drop_rate_1_step": val_losses['drop_rate_per_ks'][1]
-                }, step=global_iter)
+                    "tokens_seen": persist_global_iter * batch_size * block_size,
+                }
+                drop_rates = val_losses['drop_rate_per_ks']
+                if drop_rates is not None:
+                    if np.size(drop_rates) >= 1:
+                        log_data["val/drop_rate_0_step"] = drop_rates[0]
+                    if np.size(drop_rates) >= 2:
+                        log_data["val/drop_rate_1_step"] = drop_rates[1]
+                wandb.log(log_data, step=global_iter)
             if save_ckpt_every_n_evals != -1 and (val_losses['ntp_loss'] < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
                 best_val_loss = val_losses['ntp_loss']
                 
