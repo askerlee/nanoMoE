@@ -644,7 +644,7 @@ class GPT(PreTrainedModel, GenerationMixin):
         # Report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
         print("number of active parameters (n_exp=%d, top_k=%d): %.2fM" % (
-              config.n_exp, config.top_k, self.get_num_active_params(config.n_exp, config.top_k)/1e6))
+              config.n_exp, config.moe_top_k, self.get_num_active_params(config.n_exp, config.moe_top_k)/1e6))
     
     def get_input_embeddings(self):
         return self.transformer.wte
