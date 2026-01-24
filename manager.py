@@ -1,3 +1,5 @@
+import torch
+
 class MOEManager:
     """
     basic wrapper class for tracking, storing, and aggregating auxiliary
@@ -38,10 +40,10 @@ class MOEManager:
             # But usually we set ortho_loss_start_frac = 0, i.e. sum losses on all layers.
             start_layer = int(len(values) * self.ortho_loss_start_frac)
             values = values[start_layer:]
-        # drop_rate_per_ks is a list of numpy arrays.
-        # sum() can also add up a list of numpy arrays.
         if name == "drop_rate_per_ks":
-            return sum(values) / len(values) if values else None
+            # drop_rate_per_ks is a list of tensors.
+            values = torch.stack(values)
+            return values.mean(dim=0) if values.numel() > 0 else None
         else:
             return sum(values)
     

@@ -438,7 +438,8 @@ class MOELayer(nn.Module):
         expert_mask, router_probs, top_k_indices, rank = self.router(x)
 
         slot_served = expert_mask.any(dim=-1)   # [N, k]
-        drop_rate_per_k = (~slot_served).float().mean(dim=0).cpu().numpy()       # [k]
+        # Stick to tensor here. Using numpy array will reduce speed by 50% when compiled.
+        drop_rate_per_k = (~slot_served).float().mean(dim=0)   # [k]
         MANAGER.add("drop_rate_per_ks", drop_rate_per_k)
 
         # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.

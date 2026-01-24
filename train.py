@@ -118,9 +118,9 @@ def estimate_loss(model, val_loader):
     num_eval_iters = len(val_loader)
     for key in val_losses:
         if key != 'drop_rate_per_ks':
-            val_losses[key] = np.zeros(num_eval_iters)
+            val_losses[key] = torch.zeros(num_eval_iters, device=device)
         else:
-            val_losses[key] = np.zeros((num_eval_iters, moe_top_k))
+            val_losses[key] = torch.zeros((num_eval_iters, moe_top_k), device=device)
     
     for k, (X, Y) in enumerate(val_loader):
         if k >= num_eval_iters:
@@ -140,7 +140,7 @@ def estimate_loss(model, val_loader):
         for key in val_losses:
             if key == 'drop_rate_per_ks':
                 if losses[key] is None:
-                    val_losses[key][k] = np.zeros(moe_top_k)
+                    val_losses[key][k] = torch.zeros(moe_top_k, device=device)
                 else:
                     val_losses[key][k] = losses[key]
             else:
@@ -149,7 +149,7 @@ def estimate_loss(model, val_loader):
     model.train()
     # If key != 'drop_rate_per_ks', the mean over eval iters is a scalar.
     # Otherwise the mean over eval iters is a vector of size moe_top_k.
-    return { key: val_losses[key].mean(axis=0) for key in val_losses }
+    return { key: val_losses[key].mean(dim=0) for key in val_losses }
 
 # learning rate scheduler (warmup -> stable -> decay to zero)
 def get_lr(learning_rate: float, it: int) -> float:
@@ -711,10 +711,10 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 }
                 drop_rates = val_losses['drop_rate_per_ks']
                 if drop_rates is not None:
-                    if np.size(drop_rates) >= 1:
-                        log_data["val/drop_rate_0_step"] = drop_rates[0]
-                    if np.size(drop_rates) >= 2:
-                        log_data["val/drop_rate_1_step"] = drop_rates[1]
+                    if drop_rates.numel() >= 1:
+                        log_data["val/drop_rate_0_step"] = drop_rates[0].item()
+                    if drop_rates.numel() >= 2:
+                        log_data["val/drop_rate_1_step"] = drop_rates[1].item()
                 wandb.log(log_data, step=global_iter)
             if save_ckpt_every_n_evals != -1 and (val_losses['ntp_loss'] < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
                 best_val_loss = val_losses['ntp_loss']
