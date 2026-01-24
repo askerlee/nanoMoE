@@ -5,72 +5,44 @@ class MOEManager:
     """
 
     def __init__(self, ortho_loss_start_frac=0):
-        self.aux_losses = []
-        self.router_z_losses = []
-        self.router_ortho_losses = []
-        self.experts_ortho_losses = []
-        self.gate_output_losses = []
-        self.projs_diversity_losses = []
         self.ortho_loss_start_frac = ortho_loss_start_frac
+        self._values = {
+            "aux_loss": [],
+            "router_z_loss": [],
+            "router_ortho_loss": [],
+            "experts_ortho_loss": [],
+            "gate_output_loss": [],
+            "projs_diversity_loss": [],
+            "drop_rate_per_ks": [],
+        }
+        self._start_frac_names = {
+            "router_ortho_loss",
+            "experts_ortho_loss",
+            "gate_output_loss",
+            "projs_diversity_loss",
+        }
 
-    def reset_aux_loss(self):
-        self.aux_losses = []
-    
-    def reset_router_z_loss(self):
-        self.router_z_losses = []
-    
-    def reset_router_ortho_loss(self):
-        self.router_ortho_losses = []
-    
-    def reset_experts_ortho_loss(self):
-        self.experts_ortho_losses = []
+    def reset(self, name):
+        self._values[name] = []
 
-    def reset_gate_output_loss(self):
-        self.gate_output_losses = []
+    def add(self, name, value):
+        if name not in self._values:
+            self._values[name] = []
+        self._values[name].append(value)
 
-    def reset_projs_diversity_loss(self):
-        self.projs_diversity_losses = []
-
-    def add_aux_loss(self, loss):
-        self.aux_losses.append(loss)
-    
-    def add_router_z_loss(self, loss):
-        self.router_z_losses.append(loss)
-
-    def add_router_ortho_loss(self, loss):
-        self.router_ortho_losses.append(loss)
-
-    def add_experts_ortho_loss(self, loss):
-        self.experts_ortho_losses.append(loss)
-
-    def add_gate_output_loss(self, loss):
-        self.gate_output_losses.append(loss)
-
-    def add_projs_diversity_loss(self, loss):
-        self.projs_diversity_losses.append(loss)
-
-    def aggregate_aux_loss(self):
-        return sum(self.aux_losses)
-
-    def aggregate_router_z_loss(self):
-        return sum(self.router_z_losses)
-
-    def aggregate_router_ortho_loss(self):
-        # 0.25*8 = 2.0, so start from layer 2, i.e. skip first two layers
-        start_layer = int(len(self.router_ortho_losses) * self.ortho_loss_start_frac)
-        return sum(self.router_ortho_losses[start_layer:])
-    
-    def aggregate_experts_ortho_loss(self):
-        # 0.25*8 = 2.0, so start from layer 2, i.e. skip first two layers
-        start_layer = int(len(self.experts_ortho_losses) * self.ortho_loss_start_frac)
-        return sum(self.experts_ortho_losses[start_layer:])
-    
-    def aggregate_gate_output_loss(self):
-        start_layer = int(len(self.gate_output_losses) * self.ortho_loss_start_frac)
-        return sum(self.gate_output_losses[start_layer:])
-
-    def aggregate_projs_diversity_loss(self):
-        start_layer = int(len(self.projs_diversity_losses) * self.ortho_loss_start_frac)
-        return sum(self.projs_diversity_losses[start_layer:])
+    def aggregate(self, name):
+        values = self._values.get(name, [])
+        if name in self._start_frac_names:
+            # If ortho_loss_start_frac = 0.25 and there are 8 moe layers, then 0.25*8 = 2.0, 
+            # so start from layer 2, i.e. skip first two layers.
+            # But usually we set ortho_loss_start_frac = 0, i.e. sum losses on all layers.
+            start_layer = int(len(values) * self.ortho_loss_start_frac)
+            values = values[start_layer:]
+        # drop_rate_per_ks is a list of numpy arrays.
+        # sum() can also add up a list of numpy arrays.
+        if name == "drop_rate_per_ks":
+            return sum(values) / len(values) if values else None
+        else:
+            return sum(values)
     
 MANAGER = MOEManager(ortho_loss_start_frac=0.)

@@ -819,6 +819,9 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     "train/experts_ortho_loss_step": losses['experts_ortho_loss'],
                     "train/gate_output_loss_step": losses['gate_output_loss'],
                     "train/projs_diversity_loss_step": losses['projs_diversity_loss'],
+                    # Only log the drop rates for top-1 and top-2 experts.
+                    "train/drop_rate_0_step": losses['drop_rate_per_ks'][0],
+                    "train/drop_rate_1_step": losses['drop_rate_per_ks'][1],
                     "lr": lr,
                     "mfu": running_mfu*100,
                     "tok_per_sec": running_tokens_per_sec,

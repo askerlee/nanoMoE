@@ -167,7 +167,7 @@ class Router(nn.Module):
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
                     z_loss = self.compute_router_z_loss(logits.view(B, T, -1))
-                    MANAGER.add_router_z_loss(z_loss)
+                    MANAGER.add("router_z_loss", z_loss)
 
                 # Find top-k choices for each token
                 top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1) # [B*T, k]
@@ -179,7 +179,7 @@ class Router(nn.Module):
                     all_probs = torch.zeros_like(logits)
                     all_probs.scatter_(-1, top_k_indices, F.softmax(top_k_logits, dim=-1))
                     aux_loss = self.compute_aux_loss(all_probs.view(B, T, -1), top_k_indices.view(B, T, -1))
-                    MANAGER.add_aux_loss(aux_loss)
+                    MANAGER.add("aux_loss", aux_loss)
             else:
                  # At inference, we just need the top-k
                  top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
@@ -199,6 +199,13 @@ class Router(nn.Module):
             # This is the critical step to ensure load balancing prioritizes top-1 experts.
             # We flatten the k dimension first, so cumsum processes all top-1 choices, then all top-2, etc.
             # This is the memory-efficient equivalent of the original logic.
+            # Because it permutes to `[k, tokens, experts]` before cumsum, we are enforcing:
+            # - all **top-1** assignments fill capacity first,
+            # - then **top-2** try to use remaining capacity,
+            # - etc.
+            # That reduces a different pathology (top-2 stealing capacity from top-1), 
+            # but it **doesn’t remove within-top-1 ordering bias**: within the top-1 pass, 
+            # token order still matters.
             reshaped_mask = expert_mask_one_hot.permute(1, 0, 2).reshape(self.top_k * num_tokens, self.n_exp)
             cumulative_sum = torch.cumsum(reshaped_mask, dim=0)
             
@@ -207,11 +214,15 @@ class Router(nn.Module):
             
             # The rank is the position, but we only care about the rank for the selected expert.
             # We multiply by the one-hot mask to zero out positions for non-selected experts.
+            # NOTE: rank is not vetted with exp_capacity yet. So it includes over-capacity positions.
             rank = (position_in_expert - 1) * expert_mask_one_hot
             
             # 5. GENERATE FINAL MASKS AND RANKS FOR THE MOE LAYER
             # ----------------------------------------------------
             # Create a mask to drop tokens that exceed the expert's capacity
+            # rank >= exp_capacity -> drop token 
+            # (the current layer outputs zero for that token. 
+            # Only relies on the residual connection)
             capacity_mask = rank < exp_capacity
 
             # The final expert mask includes both the expert choice and the capacity check.
@@ -222,7 +233,11 @@ class Router(nn.Module):
             probs_mask = (final_expert_mask.sum(dim=-1) > 0) # [B*T, k]
             router_probs_masked = router_probs * probs_mask
 
-            # The final rank is collapsed to a single value per top-k choice
+            # The final rank is collapsed to a single value per top-k choice.
+            # It adds across the expert dimension, since only one expert per top-k slot is selected,
+            # and all other positions are zeros. 
+            # NOTE: final_rank is derived from rank, so it also includes 
+            # over-capacity positions.
             final_rank = torch.sum(rank, dim=-1) # [B*T, k]
 
             # The MOELayer will use these tensors to efficiently dispatch and combine tokens.
@@ -421,17 +436,22 @@ class MOELayer(nn.Module):
         # Call the router with the ORIGINAL 3D tensor. The router will handle flattening internally
         # and return routing info shaped for a flattened list of tokens.
         expert_mask, router_probs, top_k_indices, rank = self.router(x)
+
+        slot_served = expert_mask.any(dim=-1)   # [N, k]
+        drop_rate_per_k = (~slot_served).float().mean(dim=0).cpu().numpy()       # [k]
+        MANAGER.add("drop_rate_per_ks", drop_rate_per_k)
+
         # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.
         if self.training and self.use_router_ortho_loss:
             router_ortho_loss = self.compute_router_ortho_loss()
-            MANAGER.add_router_ortho_loss(router_ortho_loss)
+            MANAGER.add("router_ortho_loss", router_ortho_loss)
             # Always use gate diversity loss when using router orthogonality loss.
             projs_diversity_loss = self.compute_projs_diversity_loss()
-            MANAGER.add_projs_diversity_loss(projs_diversity_loss)
+            MANAGER.add("projs_diversity_loss", projs_diversity_loss)
 
         if self.training and self.use_experts_ortho_loss:
             experts_ortho_loss = self.compute_experts_ortho_loss()
-            MANAGER.add_experts_ortho_loss(experts_ortho_loss)
+            MANAGER.add("experts_ortho_loss", experts_ortho_loss)
 
         # Now, flatten the input tensor for the dispatch operation
         x_flat = x.view(B * T, C)
@@ -451,6 +471,9 @@ class MOELayer(nn.Module):
         valid_ranks = flat_rank[valid_mask]
 
         # Use advanced indexing to place tokens from the flattened input into the expert buffer
+        # x_flat[valid_token_indices] includes multiple copies of the same token,
+        # each sent to one of its top-k experts.
+        # valid_ranks: position within the expert's capacity buffer.
         expert_inputs[valid_expert_indices, valid_ranks] = x_flat[valid_token_indices]
 
         # --- Run experts ---
@@ -458,7 +481,7 @@ class MOELayer(nn.Module):
 
         # Only collect gate output loss after self.experts forward.
         if self.training and self.use_gate_output_loss:
-            MANAGER.add_gate_output_loss(self.experts.gate_output_loss)
+            MANAGER.add("gate_output_loss", self.experts.gate_output_loss)
             self.experts.gate_output_loss = 0  # reset for next step
 
         # --- Combine expert outputs (the "gather" part) ---
@@ -811,7 +834,8 @@ class GPT(PreTrainedModel, GenerationMixin):
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0, 
                    'gate_output_loss': 0,
-                   'projs_diversity_loss': 0
+                   'projs_diversity_loss': 0,
+                   'drop_rate_per_ks': None
                  }
 
         # Always compute logits for all positions (HuggingFace standard)
@@ -824,38 +848,40 @@ class GPT(PreTrainedModel, GenerationMixin):
 
             # add the auxiliary load balancing loss and router z loss to the main loss
             if self.config.n_exp > 1 and self.config.use_aux_loss:
-                aux_loss = MANAGER.aggregate_aux_loss()
+                aux_loss = MANAGER.aggregate("aux_loss")
                 loss += self.config.aux_loss_weight * aux_loss
                 losses['aux_loss'] = aux_loss.item() if isinstance(aux_loss, torch.Tensor) else aux_loss
-                MANAGER.reset_aux_loss()
+                MANAGER.reset("aux_loss")
             if self.config.n_exp > 1 and self.config.use_router_z_loss:
-                router_z_loss = MANAGER.aggregate_router_z_loss()
+                router_z_loss = MANAGER.aggregate("router_z_loss")
                 loss += self.config.router_z_loss_weight * router_z_loss
                 losses['router_z_loss'] = router_z_loss.item() if isinstance(router_z_loss, torch.Tensor) else router_z_loss
-                MANAGER.reset_router_z_loss()
+                MANAGER.reset("router_z_loss")
             if self.config.n_exp > 1 and self.config.use_router_ortho_loss:
-                router_ortho_loss = MANAGER.aggregate_router_ortho_loss()
+                router_ortho_loss = MANAGER.aggregate("router_ortho_loss")
                 loss += self.config.router_ortho_loss_weight * router_ortho_loss 
                 losses['router_ortho_loss'] = router_ortho_loss.item() if isinstance(router_ortho_loss, torch.Tensor) else router_ortho_loss
-                MANAGER.reset_router_ortho_loss()
-                projs_diversity_loss = MANAGER.aggregate_projs_diversity_loss()
+                MANAGER.reset("router_ortho_loss")
+                projs_diversity_loss = MANAGER.aggregate("projs_diversity_loss")
                 loss += self.config.projs_diversity_loss_weight * projs_diversity_loss
                 losses['projs_diversity_loss'] = projs_diversity_loss.item() if isinstance(projs_diversity_loss, torch.Tensor) else projs_diversity_loss
-                MANAGER.reset_projs_diversity_loss()
+                MANAGER.reset("projs_diversity_loss")
             if self.config.n_exp > 1 and self.config.use_experts_ortho_loss:
-                experts_ortho_loss = MANAGER.aggregate_experts_ortho_loss()
+                experts_ortho_loss = MANAGER.aggregate("experts_ortho_loss")
                 loss += self.config.experts_ortho_loss_weight * experts_ortho_loss
                 losses['experts_ortho_loss'] = experts_ortho_loss.item() if isinstance(experts_ortho_loss, torch.Tensor) else experts_ortho_loss
-                MANAGER.reset_experts_ortho_loss()
+                MANAGER.reset("experts_ortho_loss")
             if self.config.n_exp > 1 and self.config.use_gate_output_loss:
-                gate_output_loss = MANAGER.aggregate_gate_output_loss()
+                gate_output_loss = MANAGER.aggregate("gate_output_loss")
                 loss += self.config.gate_output_loss_weight * gate_output_loss
                 losses['gate_output_loss'] = gate_output_loss.item() if isinstance(gate_output_loss, torch.Tensor) else gate_output_loss
-                MANAGER.reset_gate_output_loss()
+                MANAGER.reset("gate_output_loss")
         else:
             # No labels provided - inference mode
             loss = None
 
+        losses['drop_rate_per_ks'] = MANAGER.aggregate("drop_rate_per_ks")
+        
         if not return_dict:
             # Legacy return format: (logits, loss, losses)
             return logits, loss, losses
