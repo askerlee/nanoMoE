@@ -849,9 +849,9 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 if drop_rates is not None:
                     if torch.is_tensor(drop_rates):
                         drop_rates = drop_rates.detach().float().cpu()
-                    if np.size(drop_rates) >= 1:
+                    if len(drop_rates) >= 1:
                         log_data["train/drop_rate_0_step"] = float(drop_rates[0])
-                    if np.size(drop_rates) >= 2:
+                    if len(drop_rates) >= 2:
                         log_data["train/drop_rate_1_step"] = float(drop_rates[1])
                 wandb.log(log_data, step=global_iter)
         
