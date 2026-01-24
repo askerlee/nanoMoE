@@ -17,6 +17,9 @@ class MOEManager:
             "projs_diversity_loss": [],
             "drop_rate_per_ks": [],
         }
+        self._drop_rate_capacity = 32
+        self._drop_rate_buffer = None
+        self._drop_rate_size = 0
         self._start_frac_names = {
             "router_ortho_loss",
             "experts_ortho_loss",
@@ -25,9 +28,23 @@ class MOEManager:
         }
 
     def reset(self, name):
+        if name == "drop_rate_per_ks":
+            self._drop_rate_size = 0
+            return
         self._values[name] = []
 
     def add(self, name, value):
+        if name == "drop_rate_per_ks":
+            if self._drop_rate_buffer is None:
+                self._drop_rate_buffer = torch.empty(
+                    (self._drop_rate_capacity, value.shape[1]),
+                    device=value.device,
+                    dtype=value.dtype,
+                )
+            new_size = self._drop_rate_size + value.shape[0]
+            self._drop_rate_buffer[self._drop_rate_size:new_size].copy_(value)
+            self._drop_rate_size = new_size
+            return
         if name not in self._values:
             self._values[name] = []
         self._values[name].append(value)
@@ -41,9 +58,10 @@ class MOEManager:
             start_layer = int(len(values) * self.ortho_loss_start_frac)
             values = values[start_layer:]
         if name == "drop_rate_per_ks":
-            # drop_rate_per_ks is a list of lists.
-            values = torch.tensor(values)
-            return values.mean(dim=0) if values.numel() > 0 else None
+            if self._drop_rate_buffer is None or self._drop_rate_size == 0:
+                return None
+            values = self._drop_rate_buffer[:self._drop_rate_size]
+            return values.mean(dim=0)
         else:
             return sum(values)
     

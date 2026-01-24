@@ -468,7 +468,7 @@ class MOELayer(nn.Module):
 
         slot_served = (rank < exp_capacity)                     # [B*T, k]
         drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
-        MANAGER.add("drop_rate_per_ks", drop_rate_per_k.tolist())
+        MANAGER.add("drop_rate_per_ks", drop_rate_per_k.detach())
 
         # Use advanced indexing to place tokens from the flattened input into the expert buffer
         # x_flat[valid_token_indices] includes multiple copies of the same token,
