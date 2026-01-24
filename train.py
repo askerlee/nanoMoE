@@ -105,7 +105,10 @@ def build_train_loader(dataset, sampler, batch_size, num_workers, device_type, s
 @torch.no_grad()
 def estimate_loss(model, val_loader):
     model.eval()
-    
+    collect_drop_rate_per_ks_ = MANAGER.collect_drop_rate_per_ks
+    # Keep collecting drop_rate_per_ks across all eval batches.
+    MANAGER.collect_drop_rate_per_ks = True
+
     val_losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
                    'router_z_loss': 0,
@@ -151,6 +154,7 @@ def estimate_loss(model, val_loader):
                 val_losses[key][k] = losses[key]
     
     model.train()
+    MANAGER.collect_drop_rate_per_ks = collect_drop_rate_per_ks_
     # If key != 'drop_rate_per_ks', the mean over eval iters is a scalar.
     # Otherwise the mean over eval iters is a vector of size moe_top_k.
     return { key: val_losses[key].mean(axis=0) for key in val_losses }
