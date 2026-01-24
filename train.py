@@ -111,12 +111,16 @@ def estimate_loss(model, val_loader):
                    'router_ortho_loss': 0,
                    'experts_ortho_loss': 0, 
                    'gate_output_loss': 0,
-                   'projs_diversity_loss': 0
+                   'projs_diversity_loss': 0,
+                   'drop_rate_per_ks': None
                 }
     
     num_eval_iters = len(val_loader)
     for key in val_losses:
-        val_losses[key] = torch.zeros(num_eval_iters, device=device)
+        if key != 'drop_rate_per_ks':
+            val_losses[key] = np.zeros(num_eval_iters)
+        else:
+            val_losses[key] = np.zeros((num_eval_iters, moe_top_k))
     
     for k, (X, Y) in enumerate(val_loader):
         if k >= num_eval_iters:
@@ -137,7 +141,9 @@ def estimate_loss(model, val_loader):
             val_losses[key][k] = losses[key]
     
     model.train()
-    return {key: val_losses[key].mean() for key in val_losses}
+    # If key != 'drop_rate_per_ks', the mean over eval iters is a scalar.
+    # Otherwise the mean over eval iters is a vector of size moe_top_k.
+    return { key: val_losses[key].mean(axis=0) for key in val_losses }
 
 # learning rate scheduler (warmup -> stable -> decay to zero)
 def get_lr(learning_rate: float, it: int) -> float:
@@ -694,10 +700,9 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             if wandb_log:
                 wandb.log({
                     "val/loss": val_losses['ntp_loss'],
-                    "lr": lr,
-                    "mfu": running_mfu*100, # convert to percentage
-                    "tokens_seen": persist_global_iter * batch_size * block_size,
-                    "eval_count": eval_count,
+                    "val/eval_count": eval_count,
+                    "val/drop_rate_0_step": val_losses['drop_rate_per_ks'][0],
+                    "val/drop_rate_1_step": val_losses['drop_rate_per_ks'][1]
                 }, step=global_iter)
             if save_ckpt_every_n_evals != -1 and (val_losses['ntp_loss'] < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
                 best_val_loss = val_losses['ntp_loss']
