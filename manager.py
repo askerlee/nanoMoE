@@ -37,11 +37,11 @@ class MOEManager:
         if name == "drop_rate_per_ks":
             if self._drop_rate_buffer is None:
                 self._drop_rate_buffer = torch.empty(
-                    (self._drop_rate_capacity, value.shape[1]),
+                    (self._drop_rate_capacity, value.shape[0]),
                     device=value.device,
                     dtype=value.dtype,
                 )
-            new_size = self._drop_rate_size + value.shape[0]
+            new_size = self._drop_rate_size + 1
             self._drop_rate_buffer[self._drop_rate_size:new_size].copy_(value)
             self._drop_rate_size = new_size
             return
