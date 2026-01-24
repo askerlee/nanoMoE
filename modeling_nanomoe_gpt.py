@@ -641,8 +641,10 @@ class GPT(PreTrainedModel, GenerationMixin):
         # Initialize weights using HF pattern
         self.post_init()
         
-        # report number of parameters
+        # Report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+        print("number of active parameters (n_exp=%d, top_k=%d): %.2fM" % (
+              config.n_exp, config.top_k, self.get_num_active_params(config.n_exp, config.top_k)/1e6))
     
     def get_input_embeddings(self):
         return self.transformer.wte
@@ -663,11 +665,40 @@ class GPT(PreTrainedModel, GenerationMixin):
         The token embeddings would too, except due to the parameter sharing these
         params are actually used as weights in the final layer, so we include them.
         """
-        n_params = sum(p.numel() for p in self.parameters())
+        n_params = 0
+        # seen: avoid double-counting tied parameters.
+        seen = set()
+        for param in self.parameters():
+            pid = id(param)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            n_params += param.numel()
         if non_embedding:
             n_params -= self.transformer.wpe.weight.numel()
         return n_params
 
+    def get_num_active_params(self, n_exp, top_k):
+        """
+        Return the number of active parameters in the model.
+        Active parameters are those that are used during a forward pass.
+        In MoE models, only a subset of expert parameters are active per token.
+        """
+        n_params = 0
+        # seen: avoid double-counting tied parameters.
+        seen = set()
+        for name, param in self.named_parameters():
+            pid = id(param)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            if 'experts' in name:
+                n_params += param.numel() * top_k / n_exp
+            else:
+                # Non-expert parameters are always active
+                n_params += param.numel()
+        return n_params
+    
     @torch.no_grad()
     def _init_weights(self, module):
         # optionally use switch transformer-style initialization
