@@ -8,6 +8,7 @@ import inspect
 from contextlib import nullcontext
 
 import torch
+import torch._dynamo
 import torch.nn as nn
 from torch.nn import functional as F
 
@@ -466,10 +467,7 @@ class MOELayer(nn.Module):
         valid_expert_indices = flat_top_k_indices[valid_mask]
         valid_ranks = flat_rank[valid_mask]
 
-        if MANAGER.collect_drop_rate_per_ks:
-            slot_served = (rank < exp_capacity)                     # [B*T, k]
-            drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
-            MANAGER.add("drop_rate_per_ks", drop_rate_per_k.detach())
+        self._maybe_collect_drop_rate(rank, exp_capacity)
 
         # Use advanced indexing to place tokens from the flattened input into the expert buffer
         # x_flat[valid_token_indices] includes multiple copies of the same token,
@@ -503,6 +501,14 @@ class MOELayer(nn.Module):
 
         # Reshape output back to the original input shape
         return output_flat.view(B, T, C)
+
+    @torch._dynamo.disable
+    def _maybe_collect_drop_rate(self, rank, exp_capacity):
+        if not MANAGER.collect_drop_rate_per_ks:
+            return
+        slot_served = (rank < exp_capacity)                     # [B*T, k]
+        drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
+        MANAGER.add("drop_rate_per_ks", drop_rate_per_k.detach())
 
     def compute_router_ortho_loss(self):
         if not self.use_qwen3_moe_mlp:
