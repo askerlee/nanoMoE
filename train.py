@@ -34,6 +34,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 from transformers import GPT2TokenizerFast
 
 from modeling_nanomoe_gpt import GPTConfig, GPT
+from manager import MANAGER
 from data.tinystories.dataloader import get_dataloader, ChunkDataset
 import numpy as np
 import random
@@ -777,6 +778,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             model.require_backward_grad_sync = ((global_iter + 1) % gradient_accumulation_steps == 0)
         
         # Forward and backward pass for this batch
+        MANAGER.collect_drop_rate_per_ks = (global_iter % log_interval == 0)
         with record_function("forward_backward"):
             with ctx:
                 with record_function("forward"):
@@ -854,6 +856,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     if len(drop_rates) >= 2:
                         log_data["train/drop_rate_1_step"] = float(drop_rates[1])
                 wandb.log(log_data, step=global_iter)
+            MANAGER.collect_drop_rate_per_ks = False
         
         # Profiler step
         if profiler is not None:

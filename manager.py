@@ -8,6 +8,7 @@ class MOEManager:
 
     def __init__(self, ortho_loss_start_frac=0):
         self.ortho_loss_start_frac = ortho_loss_start_frac
+        self.collect_drop_rate_per_ks = False
         self._values = {
             "aux_loss": [],
             "router_z_loss": [],
