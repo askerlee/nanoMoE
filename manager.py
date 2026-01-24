@@ -19,7 +19,7 @@ class MOEManager:
         }
         self._drop_rate_capacity = 32
         self._drop_rate_buffer = None
-        self._drop_rate_size = torch.zeros((), dtype=torch.int64, device="cpu")
+        self._drop_rate_size = 0
         self._start_frac_names = {
             "router_ortho_loss",
             "experts_ortho_loss",
@@ -29,7 +29,7 @@ class MOEManager:
 
     def reset(self, name):
         if name == "drop_rate_per_ks":
-            self._drop_rate_size.zero_()
+            self._drop_rate_size = 0
             return
         self._values[name] = []
 
@@ -43,7 +43,7 @@ class MOEManager:
                 )
             new_size = self._drop_rate_size + 1
             self._drop_rate_buffer[self._drop_rate_size:new_size].copy_(value)
-            self._drop_rate_size.add_(1)
+            self._drop_rate_size = new_size
             return
         if name not in self._values:
             self._values[name] = []
