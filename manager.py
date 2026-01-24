@@ -41,8 +41,8 @@ class MOEManager:
             start_layer = int(len(values) * self.ortho_loss_start_frac)
             values = values[start_layer:]
         if name == "drop_rate_per_ks":
-            # drop_rate_per_ks is a list of tensors.
-            values = torch.stack(values)
+            # drop_rate_per_ks is a list of lists.
+            values = torch.tensor(values)
             return values.mean(dim=0) if values.numel() > 0 else None
         else:
             return sum(values)
