@@ -437,11 +437,6 @@ class MOELayer(nn.Module):
         # and return routing info shaped for a flattened list of tokens.
         expert_mask, router_probs, top_k_indices, rank = self.router(x)
 
-        slot_served = expert_mask.any(dim=-1)   # [N, k]
-        # Stick to tensor here. Using numpy array will reduce speed by 50% when compiled.
-        drop_rate_per_k = (~slot_served).float().mean(dim=0)   # [k]
-        MANAGER.add("drop_rate_per_ks", drop_rate_per_k)
-
         # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.
         if self.training and self.use_router_ortho_loss:
             router_ortho_loss = self.compute_router_ortho_loss()
@@ -470,6 +465,10 @@ class MOELayer(nn.Module):
         valid_token_indices = flat_token_indices[valid_mask]
         valid_expert_indices = flat_top_k_indices[valid_mask]
         valid_ranks = flat_rank[valid_mask]
+
+        slot_served = (rank < exp_capacity)                     # [B*T, k]
+        drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
+        MANAGER.add("drop_rate_per_ks", drop_rate_per_k)
 
         # Use advanced indexing to place tokens from the flattened input into the expert buffer
         # x_flat[valid_token_indices] includes multiple copies of the same token,

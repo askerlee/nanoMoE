@@ -845,7 +845,6 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     "time_ms": dt*1000,
                     "tokens_seen": persist_global_iter * batch_size * block_size,
                 }
-                '''
                 drop_rates = losses['drop_rate_per_ks']
                 if drop_rates is not None:
                     if torch.is_tensor(drop_rates):
@@ -854,7 +853,6 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                         log_data["train/drop_rate_0_step"] = float(drop_rates[0])
                     if len(drop_rates) >= 2:
                         log_data["train/drop_rate_1_step"] = float(drop_rates[1])
-                '''
                 wandb.log(log_data, step=global_iter)
         
         # Profiler step
