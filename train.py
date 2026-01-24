@@ -105,7 +105,6 @@ def build_train_loader(dataset, sampler, batch_size, num_workers, device_type, s
 @torch.no_grad()
 def estimate_loss(model, val_loader):
     model.eval()
-    collect_drop_rate_per_ks_ = MANAGER.collect_drop_rate_per_ks
     # Keep collecting drop_rate_per_ks across all eval batches.
     MANAGER.collect_drop_rate_per_ks = True
 
@@ -154,7 +153,7 @@ def estimate_loss(model, val_loader):
                 val_losses[key][k] = losses[key]
     
     model.train()
-    MANAGER.collect_drop_rate_per_ks = collect_drop_rate_per_ks_
+    MANAGER.collect_drop_rate_per_ks = False
     # If key != 'drop_rate_per_ks', the mean over eval iters is a scalar.
     # Otherwise the mean over eval iters is a vector of size moe_top_k.
     return { key: val_losses[key].mean(axis=0) for key in val_losses }
@@ -724,7 +723,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                         log_data["val/drop_rate_0_step"] = drop_rates[0]
                     if np.size(drop_rates) >= 2:
                         log_data["val/drop_rate_1_step"] = drop_rates[1]
-                wandb.log(log_data)
+                wandb.log(log_data, step=persist_global_iter)
             if save_ckpt_every_n_evals != -1 and (val_losses['ntp_loss'] < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
                 best_val_loss = val_losses['ntp_loss']
                 
@@ -860,7 +859,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                         log_data["train/drop_rate_0_step"] = float(drop_rates[0])
                     if len(drop_rates) >= 2:
                         log_data["train/drop_rate_1_step"] = float(drop_rates[1])
-                wandb.log(log_data)
+                wandb.log(log_data, step=persist_global_iter)
             MANAGER.collect_drop_rate_per_ks = False
         
         # Profiler step
