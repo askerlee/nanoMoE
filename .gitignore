@@ -20,3 +20,4 @@ wandb/
 *out
 *.zst*
 draft.txt
+*.jsonl

@@ -440,8 +440,11 @@ class MOELayer(nn.Module):
 
         # expert_mask: [B*T, k, n_exp], router_probs: [B*T, k], etc.
         if self.training and self.use_router_ortho_loss:
-            router_ortho_loss = self.compute_router_ortho_loss()
+            router_ortho_loss, router_ortho_losses_by_exp = self.compute_router_ortho_loss()
+            # router_ortho_loss will be optimized, so we keep its computation graph.
             MANAGER.add("router_ortho_loss", router_ortho_loss)
+            # router_ortho_losses_by_exp is only for logging, so we detach it.
+            MANAGER.add("router_ortho_losses_by_exp", router_ortho_losses_by_exp.detach())
             # Always use gate diversity loss when using router orthogonality loss.
             projs_diversity_loss = self.compute_projs_diversity_loss()
             MANAGER.add("projs_diversity_loss", projs_diversity_loss)
@@ -467,7 +470,7 @@ class MOELayer(nn.Module):
         valid_expert_indices = flat_top_k_indices[valid_mask]
         valid_ranks = flat_rank[valid_mask]
 
-        self._maybe_collect_drop_rate(rank, exp_capacity)
+        self._maybe_collect_load_balancing_stats(rank, valid_expert_indices, exp_capacity)
 
         # Use advanced indexing to place tokens from the flattened input into the expert buffer
         # x_flat[valid_token_indices] includes multiple copies of the same token,
@@ -503,17 +506,21 @@ class MOELayer(nn.Module):
         return output_flat.view(B, T, C)
 
     @torch._dynamo.disable
-    def _maybe_collect_drop_rate(self, rank, exp_capacity):
-        if not MANAGER.collect_drop_rate_per_ks:
+    def _maybe_collect_load_balancing_stats(self, rank, valid_expert_indices, exp_capacity):
+        if not MANAGER.collect_load_balancing_stats:
             return
         slot_served = (rank < exp_capacity)                     # [B*T, k]
         drop_rate_per_k = (~slot_served).float().mean(dim=0)    # [k]
         MANAGER.add("drop_rate_per_ks", drop_rate_per_k.detach())
+        # Derive expert utilities: fraction of buffers used per expert.
+        expert_util_counts = torch.bincount(valid_expert_indices, minlength=self.n_exp).float()
+        expert_utilities = expert_util_counts / exp_capacity  # [n_exp]
+        MANAGER.add("expert_utilities", expert_utilities.detach())
 
     def compute_router_ortho_loss(self):
         if not self.use_qwen3_moe_mlp:
             # Only apply orthogonality loss when using Qwen3-style MoE MLPs
-            return 0
+            return 0, None
         else:
             # Compute orthogonality loss between router weight vectors and expert gate projection vectors
             router_weights = self.router.w_g.weight.unsqueeze(-1)  # [n_exp, n_embd, 1]
@@ -534,7 +541,8 @@ class MOELayer(nn.Module):
             # sum() is n_exp * intermediate_size times larger than mean()
             # n_exp = 128, intermediate_size = 2048, so the loss is 262144 times larger!!
             ortho_loss = (ortho_losses * ortho_losses_weights).sum()
-            return ortho_loss
+            ortho_losses_by_exp = (ortho_losses * ortho_losses_weights).sum(dim=1) # [n_exp]
+            return ortho_loss, ortho_losses_by_exp
 
     # use_rand_estimate: speed up diversity loss computation with stochastic estimate.
     def compute_projs_diversity_loss(self, use_rand_estimate=True, num_rand_probes=1):
@@ -842,7 +850,9 @@ class GPT(PreTrainedModel, GenerationMixin):
                    'experts_ortho_loss': 0, 
                    'gate_output_loss': 0,
                    'projs_diversity_loss': 0,
-                   'drop_rate_per_ks': None
+                   'router_ortho_losses_by_exp': None,
+                   'drop_rate_per_ks': None,
+                   'expert_utilities': None
                  }
 
         # Always compute logits for all positions (HuggingFace standard)
@@ -887,6 +897,13 @@ class GPT(PreTrainedModel, GenerationMixin):
             # No labels provided - inference mode
             loss = None
 
+        # If MANAGER.collect_load_balancing_stats is False, these will return None
+        expert_utilities = MANAGER.aggregate("expert_utilities")
+        losses['expert_utilities'] = expert_utilities.detach() if expert_utilities is not None else None
+        MANAGER.reset("expert_utilities")
+        router_ortho_losses_by_exp = MANAGER.aggregate("router_ortho_losses_by_exp")
+        losses['router_ortho_losses_by_exp'] = router_ortho_losses_by_exp.detach() if router_ortho_losses_by_exp is not None else None
+        MANAGER.reset("router_ortho_losses_by_exp")
         drop_rate_per_ks = MANAGER.aggregate("drop_rate_per_ks")
         losses['drop_rate_per_ks'] = drop_rate_per_ks.detach() if drop_rate_per_ks is not None else None
         MANAGER.reset("drop_rate_per_ks")

@@ -22,6 +22,7 @@ import os
 import time
 import math
 import pickle
+import json
 from contextlib import nullcontext
 from tqdm import tqdm
 
@@ -100,13 +101,41 @@ def build_train_loader(dataset, sampler, batch_size, num_workers, device_type, s
         worker_init_fn=lambda worker_id: seed_worker(seed + seed_offset + worker_id)
     )
 
+# expert_utilities:           Tensor of shape (num_eval_iters, num_moe_layers, n_exp).
+# router_ortho_losses_by_exp: Tensor of shape (num_eval_iters, num_moe_layers, n_exp).
+def write_expert_util_stats(expert_utilities: torch.Tensor, 
+                            router_ortho_losses_by_exp: torch.Tensor, 
+                            tag: str, filepath: str) -> None:
+    """Persist expert utilization stats to disk under a given tag."""
+    if expert_utilities is None:
+        return
+    # Append expert_utilities and router_ortho_losses_by_exp to a jsonl file.
+    # Only keep 3 digits after the decimal point for expert_utilities and router_ortho_losses_by_exp.
+    if expert_utilities is not None:
+        expert_utilities_str_list = [ [f"{u:.3f}" for u in layer] for layer in expert_utilities.detach().cpu().tolist() ]
+    else:
+        expert_utilities_str_list = None
+    
+    if router_ortho_losses_by_exp is not None:
+        router_ortho_losses_by_exp_str_list = [ [f"{l:.3f}" for l in layer] for layer in router_ortho_losses_by_exp.detach().cpu().tolist() ]
+    else:
+        router_ortho_losses_by_exp_str_list = None
+
+    record = {
+        "tag": tag,
+        "expert_utilities":           expert_utilities_str_list,
+        "router_ortho_losses_by_exp": router_ortho_losses_by_exp_str_list
+    }
+
+    with open(filepath, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record))
+        f.write("\n")
+
 
 # estimate validation loss using many batches
 @torch.no_grad()
 def estimate_loss(model, val_loader):
     model.eval()
-    # Keep collecting drop_rate_per_ks across all eval batches.
-    MANAGER.collect_drop_rate_per_ks = True
 
     val_losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
@@ -115,20 +144,34 @@ def estimate_loss(model, val_loader):
                    'experts_ortho_loss': 0, 
                    'gate_output_loss': 0,
                    'projs_diversity_loss': 0,
-                   'drop_rate_per_ks': None
+                   'router_ortho_losses_by_exp': None,
+                   'drop_rate_per_ks': None,
+                   'expert_utilities': None
                 }
     
     num_eval_iters = len(val_loader)
+    num_moe_layers = model.config.n_layer - model.config.moe_start_layer
+    moe_top_k = model.config.moe_top_k
+
     for key in val_losses:
-        if key != 'drop_rate_per_ks':
+        if key != 'drop_rate_per_ks' and key != 'expert_utilities' and key != 'router_ortho_losses_by_exp':
             val_losses[key] = torch.zeros(num_eval_iters, device=device)
-        else:
+        elif key == 'drop_rate_per_ks':
             val_losses[key] = torch.zeros((num_eval_iters, moe_top_k), device=device)
-    
+        else:  # key == 'expert_utilities' or key == 'router_ortho_losses_by_exp'
+            # num_eval_iters ~ 1000, num_moe_layers = 6, n_exp = 128 => ~ 768K floats, acceptable.
+            val_losses[key] = torch.zeros((num_eval_iters, num_moe_layers, model.config.n_exp), device=device)
+
     for k, (X, Y) in enumerate(val_loader):
         if k >= num_eval_iters:
             break
         
+        if k % log_interval == 0:
+            # Only collect drop_rate_per_ks across every log_interval iters to reduce overhead.
+            MANAGER.collect_load_balancing_stats = True
+        else:
+            MANAGER.collect_load_balancing_stats = False
+
         # Move to device
         if device_type == 'cuda':
             X, Y = X.to(device, non_blocking=True), Y.to(device, non_blocking=True)
@@ -142,17 +185,18 @@ def estimate_loss(model, val_loader):
         # the losses are computed only if self.training is True.
         for key in val_losses:
             if key == 'drop_rate_per_ks':
-                if losses[key] is None:
-                    val_losses[key][k] = torch.zeros(moe_top_k, device=device)
-                else:
+                if losses[key] is not None:
+                    val_losses[key][k] = losses[key]
+            elif key == 'expert_utilities' or key == 'router_ortho_losses_by_exp':
+                if losses[key] is not None:
                     val_losses[key][k] = losses[key]
             else:
                 val_losses[key][k] = losses[key]
     
     model.train()
-    MANAGER.collect_drop_rate_per_ks = False
-    # If key != 'drop_rate_per_ks', the mean over eval iters is a scalar.
-    # Otherwise the mean over eval iters is a vector of size moe_top_k.
+    MANAGER.collect_load_balancing_stats = False
+    # If key != 'drop_rate_per_ks' and key != 'expert_utilities', the mean over eval iters is a scalar.
+    # Otherwise the mean over eval iters is a vector of size moe_top_k, or a matrix of size (num_moe_layers, n_exp).
     return { key: val_losses[key].mean(dim=0) for key in val_losses }
 
 # learning rate scheduler (warmup -> stable -> decay to zero)
@@ -167,6 +211,7 @@ def get_lr(learning_rate: float, it: int) -> float:
     decay_ratio = (it - decay_start) / float(max(1, decay_iters))
     return learning_rate * (1 - math.sqrt(decay_ratio))
 
+# Only useful when loading old checkpoints that did not separate embeddings into their own group.
 def separate_embeddings_in_own_group(model, optimizer, weight_decay):
     """Separate embedding parameters into their own parameter group in the optimizer."""
     # Snapshot original groups/options
@@ -260,6 +305,10 @@ seed = 1337
 wandb_log = True # False # disabled by default
 wandb_project = 'nano-moe'
 wandb_run_name = 'gpt2-124M-owt' + str(time.time())
+# Whether to save expert utilization stats from beginning to this iteration.
+# Set to -1 to disable.
+log_expert_util_stats_until_training_iter = -1
+log_expert_util_stats_during_eval = False
 
 # data
 # To set datasets in the command line, use e.g. --datasets="['fineweb_edu-30b']".
@@ -349,6 +398,9 @@ exec(open('configurator.py').read()) # overrides from command line or config fil
 config = {k: globals()[k] for k in config_keys}  # will be useful for logging
 print(config)
 # -----------------------------------------------------------------------------
+
+current_folder = os.path.dirname(os.path.abspath(__file__))
+log_expert_util_stats_file = os.path.join(current_folder, f'{ckpt_prefix}-expert-utils.jsonl')
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
@@ -721,6 +773,12 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     if len(drop_rates) >= 2:
                         log_data["val/drop_rate_1_step"] = drop_rates[1]
                 wandb.log(log_data, step=persist_global_iter)
+                if log_expert_util_stats_during_eval:
+                    write_expert_util_stats(val_losses['expert_utilities'], 
+                                            val_losses['router_ortho_losses_by_exp'],
+                                            f"val-{persist_global_iter:06d}", 
+                                            log_expert_util_stats_file)
+
             if save_ckpt_every_n_evals != -1 and (val_losses['ntp_loss'] < best_val_loss or save_ckpt_regardless_loss) and (eval_count % save_ckpt_every_n_evals == 0):
                 best_val_loss = val_losses['ntp_loss']
                 
@@ -779,7 +837,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             model.require_backward_grad_sync = ((global_iter + 1) % gradient_accumulation_steps == 0)
         
         # Forward and backward pass for this batch
-        MANAGER.collect_drop_rate_per_ks = (global_iter % log_interval == 0)
+        MANAGER.collect_load_balancing_stats = (global_iter % log_interval == 0)
         with record_function("forward_backward"):
             with ctx:
                 with record_function("forward"):
@@ -855,7 +913,14 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     if len(drop_rates) >= 2:
                         log_data["train/drop_rate_1_step"] = drop_rates[1]
                 wandb.log(log_data, step=persist_global_iter)
-            MANAGER.collect_drop_rate_per_ks = False
+
+            if log_expert_util_stats_until_training_iter > 0 and persist_global_iter <= log_expert_util_stats_until_training_iter:
+                write_expert_util_stats(losses['expert_utilities'], 
+                                        losses['router_ortho_losses_by_exp'],
+                                        f"train-{persist_global_iter:06d}", 
+                                        log_expert_util_stats_file)
+
+            MANAGER.collect_load_balancing_stats = False
         
         # Profiler step
         if profiler is not None:
