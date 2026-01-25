@@ -21,14 +21,11 @@ import os
 # os.environ['NCCL_IGNORE_DISABLED_P2P'] = '1'
 import time
 import math
-import pickle
 import json
 from contextlib import nullcontext
 from tqdm import tqdm
 
 import torch
-import torch._dynamo
-torch._dynamo.config.suppress_errors = True
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 from torch.profiler import profile, record_function, ProfilerActivity
@@ -36,7 +33,7 @@ from transformers import GPT2TokenizerFast
 
 from modeling_nanomoe_gpt import GPTConfig, GPT
 from manager import MANAGER
-from data.tinystories.dataloader import get_dataloader, ChunkDataset
+from data.tinystories.dataloader import ChunkDataset
 import numpy as np
 import random
 
@@ -112,12 +109,12 @@ def write_expert_util_stats(expert_utilities: torch.Tensor,
     # Append expert_utilities and router_ortho_losses_by_exp to a jsonl file.
     # Only keep 3 digits after the decimal point for expert_utilities and router_ortho_losses_by_exp.
     if expert_utilities is not None:
-        expert_utilities_str_list = [ [f"{u:.3f}" for u in layer] for layer in expert_utilities.detach().cpu().tolist() ]
+        expert_utilities_str_list = [ [f"{u:06.3f}" for u in layer] for layer in expert_utilities.detach().cpu().tolist() ]
     else:
         expert_utilities_str_list = None
     
     if router_ortho_losses_by_exp is not None:
-        router_ortho_losses_by_exp_str_list = [ [f"{l:.3f}" for l in layer] for layer in router_ortho_losses_by_exp.detach().cpu().tolist() ]
+        router_ortho_losses_by_exp_str_list = [ [f"{l:06.3f}" for l in layer] for layer in router_ortho_losses_by_exp.detach().cpu().tolist() ]
     else:
         router_ortho_losses_by_exp_str_list = None
 
@@ -364,7 +361,10 @@ grad_clip = 0.0 # clip gradients at this value, or disable if == 0.0
 
 # epoch-based training
 num_epochs = 1.0  # total number of epochs to train (can be fractional)
-evals_per_epoch = 10  # number of evaluations per epoch
+evals_per_epoch = 500  # number of evaluations per epoch
+# eval_every_n_iters will be set based on evals_per_epoch if -1
+# If eval_every_n_iters is provided, will set evals_per_epoch based on it.
+eval_every_n_iters = -1 
 warmup_tokens = 500_000_000  # absolute number of tokens for warmup (500M)
 decay_frac = 0.1     # fraction of total steps used for final decay
 load_optimizer_state = True
@@ -509,7 +509,11 @@ tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * bl
 warmup_iters = int(warmup_tokens / tokens_per_iter)  # Convert tokens to iterations
 decay_iters = int(decay_frac * total_iters)
 decay_start = total_iters - decay_iters
-eval_every_n_iters = max(1, iters_per_epoch // evals_per_epoch)
+
+if eval_every_n_iters == -1:
+    eval_every_n_iters = max(1, iters_per_epoch // evals_per_epoch)
+else:
+    evals_per_epoch = iters_per_epoch // eval_every_n_iters
 
 tokens_per_epoch = tokens_per_iter * iters_per_epoch
 
