@@ -103,6 +103,7 @@ def build_train_loader(dataset, sampler, batch_size, num_workers, device_type, s
 def write_expert_util_stats(expert_utilities: torch.Tensor, 
                             router_ortho_losses_by_exp: torch.Tensor, 
                             gate_grad_norms: torch.Tensor,
+                            gate_grad_alignments: torch.Tensor,
                             tag: str, filepath: str) -> None:
     """Persist expert utilization stats to disk under a given tag."""
     if expert_utilities is None:
@@ -119,6 +120,11 @@ def write_expert_util_stats(expert_utilities: torch.Tensor,
     else:
         gate_grad_norms_str_list = None
 
+    if gate_grad_alignments is not None:
+        gate_grad_alignments_str_list = [ [f"{g:08.5f}" for g in layer] for layer in gate_grad_alignments.detach().cpu().tolist() ]
+    else:
+        gate_grad_alignments_str_list = None
+
     if router_ortho_losses_by_exp is not None:
         router_ortho_losses_by_exp_str_list = [ [f"{l:08.5f}" for l in layer] for layer in router_ortho_losses_by_exp.detach().cpu().tolist() ]
     else:
@@ -131,6 +137,8 @@ def write_expert_util_stats(expert_utilities: torch.Tensor,
     }
     if gate_grad_norms is not None:
         record["gate_grad_norms"] = gate_grad_norms_str_list
+    if gate_grad_alignments is not None:
+        record["gate_grad_alignments"] = gate_grad_alignments_str_list
 
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record))
@@ -790,6 +798,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     write_expert_util_stats(val_losses['expert_utilities'], 
                                             val_losses['router_ortho_losses_by_exp'],
                                             None, # No gate_grad_norms during eval
+                                            None, # No gate_grad_alignments during eval
                                             f"val-{persist_global_iter:06d}", 
                                             log_expert_util_stats_file)
 
@@ -864,6 +873,8 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
 
         if MANAGER.collect_load_balancing_stats:
             gate_grad_norms = []
+            gate_grad_alignments = []
+
             for i in range(moe_start_layer, n_layer):
                 layer = model.transformer.h[i]
                 if hasattr(layer.mlp, 'experts'):
@@ -872,8 +883,21 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     if gate_grad is not None:
                         gate_grad_norm = gate_grad.norm(dim=(1,2))
                         gate_grad_norms.append(gate_grad_norm)
+                        # Compute gate-grad alignment
+                        with torch.no_grad():
+                            gate_weights = layer.mlp.experts.gate_proj  # [n_exp, hidden_size, intermediate_size]
+                            gate_weights_flat = gate_weights.view(layer.mlp.n_exp, -1)  # [n_exp, hidden_size * intermediate_size]
+                            gate_grad_flat = gate_grad.view(layer.mlp.n_exp, -1)        # [n_exp, hidden_size * intermediate_size]
+                            # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
+                            # -(w·∇w) is positive when the update has a component along w (tends to increase ||w||),
+                            # and negative when it moves against w (tends to decrease ||w||).                            
+                            alignment = -(gate_weights_flat * gate_grad_flat).sum(dim=1)  # [n_exp]
+                            gate_grad_alignments.append(alignment)
+
             gate_grad_norms = torch.stack(gate_grad_norms, dim=0) if gate_grad_norms else None
             losses['gate_grad_norms'] = gate_grad_norms
+            gate_grad_alignments = torch.stack(gate_grad_alignments, dim=0) if gate_grad_alignments else None
+            losses['gate_grad_alignments'] = gate_grad_alignments
 
         # Only step optimizer(s) every gradient_accumulation_steps iterations
         if (global_iter + 1) % gradient_accumulation_steps == 0:
@@ -945,6 +969,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 write_expert_util_stats(losses['expert_utilities'], 
                                         losses['router_ortho_losses_by_exp'],
                                         losses['gate_grad_norms'],
+                                        losses['gate_grad_alignments'],
                                         f"train-{persist_global_iter:06d}", 
                                         log_expert_util_stats_file)
 
