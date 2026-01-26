@@ -150,30 +150,24 @@ def write_expert_util_stats(expert_utilities: torch.Tensor,
 def estimate_loss(model, val_loader, max_eval_batches):
     model.eval()
 
-    val_losses = { 'ntp_loss': 0,
-                   'aux_loss': 0,
-                   'router_z_loss': 0,
-                   'router_ortho_loss': 0,
-                   'experts_ortho_loss': 0, 
-                   'gate_output_loss': 0,
-                   'projs_diversity_loss': 0,
-                   'router_ortho_losses_by_exp': None,
-                   'drop_rate_per_ks': None,
-                   'expert_utilities': None
-                }
-    
-    num_eval_batches = min(max_eval_batches, len(val_loader))
+    num_eval_batches = min(max_eval_batches, len(val_loader)) if max_eval_batches > 0 else len(val_loader)
     num_moe_layers = model.config.n_layer - model.config.moe_start_layer
     moe_top_k = model.config.moe_top_k
 
-    for key in val_losses:
-        if key != 'drop_rate_per_ks' and key != 'expert_utilities' and key != 'router_ortho_losses_by_exp':
-            val_losses[key] = torch.zeros(num_eval_batches, device=device)
-        elif key == 'drop_rate_per_ks':
-            val_losses[key] = torch.zeros((num_eval_batches, moe_top_k), device=device)
-        else:  # key == 'expert_utilities' or key == 'router_ortho_losses_by_exp'
-            # num_eval_batches ~ 1000, num_moe_layers = 6, n_exp = 128 => ~ 768K floats, acceptable.
-            val_losses[key] = torch.zeros((num_eval_batches, num_moe_layers, model.config.n_exp), device=device)
+    # Scalar losses are always present; pre-allocate them
+    # Tensor losses start as None and are lazily allocated if present in model output
+    val_losses = {
+        'ntp_loss':             torch.zeros(num_eval_batches, device=device),
+        'aux_loss':             torch.zeros(num_eval_batches, device=device),
+        'router_z_loss':        torch.zeros(num_eval_batches, device=device),
+        'router_ortho_loss':    torch.zeros(num_eval_batches, device=device),
+        'experts_ortho_loss':   torch.zeros(num_eval_batches, device=device),
+        'gate_output_loss':     torch.zeros(num_eval_batches, device=device),
+        'projs_diversity_loss': torch.zeros(num_eval_batches, device=device),
+        'router_ortho_losses_by_exp':   None,
+        'drop_rate_per_ks':             None,
+        'expert_utilities':             None,
+    }
 
     for k, (X, Y) in enumerate(val_loader):
         if k >= num_eval_batches:
@@ -194,23 +188,26 @@ def estimate_loss(model, val_loader, max_eval_batches):
         with ctx:
             _, loss, losses = model(input_ids=X, labels=Y, return_dict=False)
         
-        # All losses other than ntp_loss are actually zero, since in modeling_nanomoe_gpt.py,
-        # the losses are computed only if self.training is True.
+        # Accumulate losses. Most auxiliary losses are zero during eval since
+        # they are computed only when self.training is True in modeling_nanomoe_gpt.py.
         for key in val_losses:
             if key == 'drop_rate_per_ks':
-                if losses[key] is not None:
+                if losses.get(key) is not None:
+                    if val_losses[key] is None:
+                        val_losses[key] = torch.zeros((num_eval_batches, moe_top_k), device=device)
                     val_losses[key][k] = losses[key]
-            elif key == 'expert_utilities' or key == 'router_ortho_losses_by_exp':
-                if losses[key] is not None:
+            elif key in ('expert_utilities', 'router_ortho_losses_by_exp'):
+                if losses.get(key) is not None:
+                    if val_losses[key] is None:
+                        val_losses[key] = torch.zeros((num_eval_batches, num_moe_layers, model.config.n_exp), device=device)
                     val_losses[key][k] = losses[key]
             else:
                 val_losses[key][k] = losses[key]
     
     model.train()
     MANAGER.collect_load_balancing_stats = False
-    # If key != 'drop_rate_per_ks' and key != 'expert_utilities', the mean over eval iters is a scalar.
-    # Otherwise the mean over eval iters is a vector of size moe_top_k, or a matrix of size (num_moe_layers, n_exp).
-    return { key: val_losses[key].mean(dim=0) for key in val_losses }
+    # Mean over eval batches; scalar losses become scalars, tensor losses keep remaining dims
+    return {key: (val_losses[key].mean(dim=0) if val_losses[key] is not None else None) for key in val_losses}
 
 # learning rate scheduler (warmup -> stable -> decay to zero)
 def get_lr(learning_rate: float, it: int) -> float:
