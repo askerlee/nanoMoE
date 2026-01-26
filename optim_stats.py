@@ -16,60 +16,96 @@ def smart_format(value, precision=5):
         return f"{value:.{precision}f}"
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--resume_from", type=str, required=True, help="Path to the checkpoint directory to resume from")
+parser.add_argument("--ckpt", type=str, required=True, help="Path to the checkpoint directory to load from")
+parser.add_argument("--diff", type=str, default=None, help="Path to a second compared checkpoint directory to load from")
 parser.add_argument("--topk", type=int, default=32, help="Top-K value for MoE (not used in this script)")
 parser.add_argument("--bottomk", type=int, default=96, help="Bottom-K value for MoE (not used in this script)")
 parser.add_argument("--verbose", action='store_true', help="Whether to print detailed parameter states")
 args = parser.parse_args()
 
-state_dict = torch.load(args.resume_from + "/training_state.pt", weights_only=False, map_location='cpu')
+state_dict = torch.load(args.ckpt + "/training_state.pt", weights_only=False, map_location='cpu')
 optim_state = state_dict['optimizer_state_dict']
 
 # Load model weight.
-model = AutoModelForCausalLM.from_pretrained(args.resume_from, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(args.ckpt, trust_remote_code=True)
+if args.diff:
+    model2 = AutoModelForCausalLM.from_pretrained(args.diff, trust_remote_code=True)
+    print(f"{args.diff} loaded from second checkpoint for comparison.")
+else:
+    model2 = None
 
-# lm_head weight is tied to wte weight, so include it in embedding params
-embedding_suffixes = ('wte.weight', 'wpe.weight', 'lm_head.weight')
+def create_param_dicts(model):
+    # lm_head weight is tied to wte weight, so include it in embedding params
+    embedding_suffixes = ('wte.weight', 'wpe.weight', 'lm_head.weight')
 
-# Split into decay, nodecay and embedding groups (same logic as optimizer).
-# This is to reconstruct parameter ordering as done in optimizer construction
-param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
-handled_params = set()
-decay_params = []
-nodecay_params = []
-embedding_params = []
+    # Split into decay, nodecay and embedding groups (same logic as optimizer).
+    # This is to reconstruct parameter ordering as done in optimizer construction
+    param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
+    handled_params = set()
+    decay_params = []
+    nodecay_params = []
+    embedding_params = []
 
-for name, param in param_dict.items():
-    if not param.requires_grad:
-        continue
-    pid = id(param)
-    if pid in handled_params:
-        continue
-    handled_params.add(pid)
+    for name, param in param_dict.items():
+        if not param.requires_grad:
+            continue
+        pid = id(param)
+        if pid in handled_params:
+            continue
+        handled_params.add(pid)
 
-    is_bias = name.endswith('bias')
-    if name.endswith(embedding_suffixes):
-        embedding_params.append([name, param])
-    elif param.dim() >= 2 and not is_bias:
-        decay_params.append([name, param])
-    else:
-        nodecay_params.append([name, param])
+        is_bias = name.endswith('bias')
+        if name.endswith(embedding_suffixes):
+            embedding_params.append([name, param])
+        elif param.dim() >= 2 and not is_bias:
+            decay_params.append([name, param])
+        else:
+            nodecay_params.append([name, param])
 
-# Build param_id_to_name matching optimizer's parameter order
-# Optimizer groups are: [decay_params, nodecay_params]
-param_id_to_name = {}
-param_id = 0
-for name, param in decay_params:
-    param_id_to_name[str(param_id)] = name
-    param_id += 1
-for name, param in nodecay_params:
-    param_id_to_name[str(param_id)] = name
-    param_id += 1
+    # Build param_id_to_name matching optimizer's parameter order
+    # Optimizer groups are: [decay_params, nodecay_params]
+    param_id_to_name = {}
+    param_id = 0
+    for name, param in decay_params:
+        param_id_to_name[str(param_id)] = name
+        param_id += 1
+    for name, param in nodecay_params:
+        param_id_to_name[str(param_id)] = name
+        param_id += 1
 
-if not os.path.exists("param_id_to_name.json"):
-    with open("param_id_to_name.json", "w") as f:
-        json.dump(param_id_to_name, f, indent=2)
-    print("param_id_to_name.json created successfully.")
+    if not os.path.exists("param_id_to_name.json"):
+        with open("param_id_to_name.json", "w") as f:
+            json.dump(param_id_to_name, f, indent=2)
+        print("param_id_to_name.json created successfully.")
+
+    return param_dict, param_id_to_name
+
+def diff_weight(param_dict, param_dict2, param_name, param_name_short, 
+                top_k_indices, bottom_k_indices, verbose):
+    w1 = param_dict[param_name]
+    w2 = param_dict2[param_name]
+    top_diff    = w1[top_k_indices] - w2[top_k_indices]
+    bottom_diff = w1[bottom_k_indices] - w2[bottom_k_indices]
+    top_diff_norm    = top_diff.norm().item()
+    bottom_diff_norm = bottom_diff.norm().item()
+    print(f"{param_name_short} top    diff norm: {smart_format(top_diff_norm, 3)}")
+    print(f"{param_name_short} bottom diff norm: {smart_format(bottom_diff_norm, 3)}")
+    if verbose:
+        dims = list(range(len(top_diff.shape)))[1:]
+        top_diff_norms    = top_diff.norm(dim=dims)  # [K1]
+        bottom_diff_norms = bottom_diff.norm(dim=dims)  # [K2]
+        try:
+            print(f"{param_name_short} top    diff norms:")
+            print(", ".join([smart_format(v, precision=3) for v in top_diff_norms]))
+            print(f"{param_name_short} bottom diff norms:")
+            print(", ".join([smart_format(v, precision=3) for v in bottom_diff_norms]))
+        except:
+            breakpoint()
+
+param_dict, param_id_to_name = create_param_dicts(model)
+if model2:
+    # model2's param_id_to_name should be the same as model. So no need to recreate.
+    param_dict2 = {pn: p for pn, p in model2.named_parameters() if p.requires_grad}
 
 # Get optimizer state
 state        = optim_state['state']
@@ -94,7 +130,7 @@ for param_id, param_state in state.items():
             K1, K2 = args.topk, args.bottomk
             topk_experts_grad_norms, topk_indices       = torch.topk(experts_grad_norms_by_expert, K1)
             bottomk_experts_grad_norms, bottomk_indices = torch.topk(-experts_grad_norms_by_expert, K2)
-            bottomk_experts_grad_norms = -bottomk_experts_grad_norms
+            bottomk_experts_grad_norms      = -bottomk_experts_grad_norms
             topk_experts_grad_norm_mean     = topk_experts_grad_norms.mean().item()
             bottomk_experts_grad_norm_mean  = bottomk_experts_grad_norms.mean().item()
             param_group_stat_dict['experts'][param_name]['topk_experts_grad_norm_mean']          = topk_experts_grad_norm_mean
@@ -105,10 +141,41 @@ for param_id, param_state in state.items():
             grad_norm_ratio = param_group_stat_dict['experts'][param_name]['topk_bottomk_experts_grad_norm_ratio']
             grad_norm_std   = param_group_stat_dict['experts'][param_name]['experts_grad_norm_std']
             print(f"{param_name_short} top-{K1}/bottom-{K2} experts grad norm: {smart_format(topk_experts_grad_norm_mean)}/{smart_format(bottomk_experts_grad_norm_mean)} ratio: {smart_format(grad_norm_ratio, 4)}, std: {smart_format(grad_norm_std)}")
-            if args.verbose:
-                print(f"Top-{K1}    experts indices: {topk_indices.tolist()}")
-                print(f"Bottom-{K2} experts indices: {bottomk_indices.tolist()}")
 
+            if args.verbose:
+                print(f"{param_name_short} Top-{K1}    experts indices: {topk_indices.tolist()}")
+                print(f"{param_name_short} Bottom-{K2} experts indices: {bottomk_indices.tolist()}")
+
+            if param_name.endswith('gate_proj'):
+                router_gate_name = param_name.replace('experts.gate_proj', 'router.w_g.weight')
+                router_gate_short_name = router_gate_name.replace("transformer.h.", "").replace("mlp.", "").replace(".weight", "")
+                router_gate = param_dict[router_gate_name]
+                # router_gate: [n_exp, n_emb]
+                top_gate_norms = router_gate.norm(dim=1)[topk_indices]      # [K1]
+                bottom_gate_norms = router_gate.norm(dim=1)[bottomk_indices]# [K2]
+                top_gate_norm_mean = top_gate_norms.mean().item()
+                bottom_gate_norm_mean = bottom_gate_norms.mean().item()
+                print(f"{router_gate_short_name} top-{K1}    experts router gate norm mean: {smart_format(top_gate_norm_mean)}")
+                print(f"{router_gate_short_name} bottom-{K2} experts router gate norm mean: {smart_format(bottom_gate_norm_mean)}")
+                if args.verbose:
+                    print(f"{router_gate_short_name} top-{K1}    experts router gate norms:")
+                    print(", ".join([smart_format(v, precision=3) for v in top_gate_norms.tolist()]))
+                    print(f"{router_gate_short_name} bottom-{K2} experts router gate norms:")
+                    print(", ".join([smart_format(v, precision=3) for v in bottom_gate_norms.tolist()]))
+
+                if model2:
+                    # Diff router gate
+                    diff_weight(param_dict, param_dict2, router_gate_name, router_gate_short_name,
+                                topk_indices, bottomk_indices, args.verbose)
+                    # Diff expert gate proj
+                    diff_weight(param_dict, param_dict2, param_name, param_name_short,
+                                topk_indices, bottomk_indices, args.verbose)
+                    # Diff expert c_fc
+                    expert_c_fc_name = param_name.replace('gate_proj', 'c_fc')
+                    expert_c_fc_short_name = param_name_short.replace('gate_proj', 'c_fc')
+                    diff_weight(param_dict, param_dict2, expert_c_fc_name, expert_c_fc_short_name,
+                                topk_indices, bottomk_indices, args.verbose)
+                    
             w = param_dict[param_name]
             # All such expert parameters should be 3D tensors like [n_exp, n_embd, 4*n_embd]
             if w.dim() != 3:

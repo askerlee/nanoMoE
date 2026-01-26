@@ -530,18 +530,18 @@ class MOELayer(nn.Module):
             # gate_proj_weights: [n_exp, n_embd, intermediate_size]
             gate_proj_weights = self.grad_scaler(self.experts.gate_proj)  
             # ortho_losses: [n_exp, intermediate_size]
-            ortho_losses = (router_weights * gate_proj_weights).sum(dim=1)
-            ortho_losses_weights = torch.ones_like(ortho_losses)
+            ortho_losses_signed = (router_weights * gate_proj_weights).sum(dim=1)
+            ortho_losses_weights = torch.ones_like(ortho_losses_signed)
             # Negative correlations could be downweighted by setting router_ortho_neg_corr_weight < 1.
             # But experiments seem to suggest that it's better to penalize negative correlations equally.
-            ortho_losses_weights[ortho_losses < 0] = self.router_ortho_neg_corr_weight       
+            ortho_losses_weights[ortho_losses_signed < 0] = self.router_ortho_neg_corr_weight       
             # Square the dot products to penalize both positive and negative correlations
-            ortho_losses = ortho_losses.square()
+            ortho_losses = ortho_losses_signed.square()
             # Change mean to sum, otherwise the loss is too small to have effect.
             # sum() is n_exp * intermediate_size times larger than mean()
             # n_exp = 128, intermediate_size = 2048, so the loss is 262144 times larger!!
             ortho_loss = (ortho_losses * ortho_losses_weights).sum()
-            ortho_losses_by_exp = (ortho_losses * ortho_losses_weights).sum(dim=1) # [n_exp]
+            ortho_losses_by_exp = ortho_losses_signed.sum(dim=1) # [n_exp]
             return ortho_loss, ortho_losses_by_exp
 
     # use_rand_estimate: speed up diversity loss computation with stochastic estimate.
