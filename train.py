@@ -102,44 +102,47 @@ def build_train_loader(dataset, sampler, batch_size, num_workers, device_type, s
 # router_ortho_losses_by_exp: Tensor of shape (num_eval_batches, num_moe_layers, n_exp).
 def write_expert_util_stats(expert_utilities: torch.Tensor, 
                             router_ortho_losses_by_exp: torch.Tensor, 
-                            gate_grad_norms: torch.Tensor,
-                            gate_grad_alignments: torch.Tensor,
+                            router_grad_norms: torch.Tensor,
+                            router_grad_alignments: torch.Tensor,
+                            exp_gate_grad_norms: torch.Tensor,
                             tag: str, filepath: str) -> None:
     """Persist expert utilization stats to disk under a given tag."""
-    if expert_utilities is None:
-        return
-    # Append expert_utilities and router_ortho_losses_by_exp to a jsonl file.
-    # Only keep 3 digits after the decimal point for expert_utilities and router_ortho_losses_by_exp.
+    record = {
+        "tag": tag,
+    }    
+
     if expert_utilities is not None:
         expert_utilities_str_list = [ [f"{u:08.5f}" for u in layer] for layer in expert_utilities.detach().cpu().tolist() ]
+        record["expert_utilities"] = expert_utilities_str_list
     else:
         expert_utilities_str_list = None
-    
-    if gate_grad_norms is not None:
-        gate_grad_norms_str_list = [ [f"{g:08.5f}" for g in layer] for layer in gate_grad_norms.detach().cpu().tolist() ]
-    else:
-        gate_grad_norms_str_list = None
-
-    if gate_grad_alignments is not None:
-        gate_grad_alignments_str_list = [ [f"{g:08.5f}" for g in layer] for layer in gate_grad_alignments.detach().cpu().tolist() ]
-    else:
-        gate_grad_alignments_str_list = None
 
     if router_ortho_losses_by_exp is not None:
         router_ortho_losses_by_exp_str_list = [ [f"{l:08.5f}" for l in layer] for layer in router_ortho_losses_by_exp.detach().cpu().tolist() ]
+        record["router_ortho_losses_by_exp"] = router_ortho_losses_by_exp_str_list
     else:
         router_ortho_losses_by_exp_str_list = None
 
-    record = {
-        "tag": tag,
-        "expert_utilities":           expert_utilities_str_list,
-        "router_ortho_losses_by_exp": router_ortho_losses_by_exp_str_list,
-    }
-    if gate_grad_norms is not None:
-        record["gate_grad_norms"] = gate_grad_norms_str_list
-    if gate_grad_alignments is not None:
-        record["gate_grad_alignments"] = gate_grad_alignments_str_list
+    if router_grad_norms is not None:
+        router_grad_norms_str_list = [ [f"{g:08.5f}" for g in layer] for layer in router_grad_norms.detach().cpu().tolist() ]
+        record["router_grad_norms"] = router_grad_norms_str_list
+    else:
+        router_grad_norms_str_list = None
 
+    if router_grad_alignments is not None:
+        # router_grad_alignments are close to 0, so scale by 1000 for better readability.
+        router_grad_alignments_str_list = [ [f"{g*1000:08.5f}" for g in layer] for layer in router_grad_alignments.detach().cpu().tolist() ]
+        record["router_grad_alignments"] = router_grad_alignments_str_list
+    else:
+        router_grad_alignments_str_list = None
+
+    if exp_gate_grad_norms is not None:
+        # exp_gate_grad_norms are close to 0, so scale by 1000 for better readability.
+        exp_gate_grad_norms_str_list = [ [f"{g*1000:08.5f}" for g in layer] for layer in exp_gate_grad_norms.detach().cpu().tolist() ]
+        record["exp_gate_grad_norms"] = exp_gate_grad_norms_str_list
+    else:
+        exp_gate_grad_norms_str_list = None
+        
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record))
         f.write("\n")
@@ -347,6 +350,7 @@ aux_loss_weight = 0.001
 router_z_loss_weight = 0.01
 router_ortho_loss_weight = 0.01
 router_ortho_neg_corr_weight = 1  # weight for negative correlations in router-ortho loss
+router_ortho_loss_leave_one_out = False  # whether to leave one out when computing router ortho loss
 # experts_ortho_loss is very small due to squared cosine similarities.
 # So its weight is set higher to have a meaningful effect.
 experts_ortho_loss_weight = 0.01  
@@ -564,6 +568,7 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   router_z_loss_weight=router_z_loss_weight, 
                   router_ortho_loss_weight=router_ortho_loss_weight,
                   router_ortho_neg_corr_weight=router_ortho_neg_corr_weight,
+                  router_ortho_loss_leave_one_out=router_ortho_loss_leave_one_out,
                   experts_ortho_loss_weight=experts_ortho_loss_weight,
                   gate_output_loss_weight=gate_output_loss_weight,
                   projs_diversity_loss_weight=projs_diversity_loss_weight,
@@ -794,8 +799,9 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 if log_expert_util_stats_during_eval:
                     write_expert_util_stats(val_losses['expert_utilities'], 
                                             val_losses['router_ortho_losses_by_exp'],
-                                            None, # No gate_grad_norms during eval
-                                            None, # No gate_grad_alignments during eval
+                                            None, # No router_grad_norms during eval
+                                            None, # No router_grad_alignments during eval
+                                            None, # No exp_gate_grad_norms during eval
                                             f"val-{persist_global_iter:06d}", 
                                             log_expert_util_stats_file)
 
@@ -869,32 +875,43 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 scaler.scale(loss).backward()
 
         if MANAGER.collect_load_balancing_stats:
-            gate_grad_norms = []
-            gate_grad_alignments = []
+            router_grad_norms = []
+            router_grad_alignments = []
+            exp_gate_grad_norms = []
 
             for i in range(moe_start_layer, n_layer):
                 layer = model.transformer.h[i]
                 if hasattr(layer.mlp, 'experts'):
-                    # [n_exp, hidden_size, intermediate_size]
-                    gate_grad = layer.mlp.experts.gate_proj.grad
-                    if gate_grad is not None:
-                        gate_grad_norm = gate_grad.norm(dim=(1,2))
-                        gate_grad_norms.append(gate_grad_norm)
-                        # Compute gate-grad alignment
+                    # [n_exp, hidden_size]
+                    router_gate_grad = layer.mlp.router.w_g.weight.grad
+                    if router_gate_grad is not None:
+                        router_grad_norm = router_gate_grad.norm(dim=1)
+                        router_grad_norms.append(router_grad_norm)
+                        # losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
+
+                        # Compute router grad - exp gate weight alignment
                         with torch.no_grad():
-                            gate_weights = layer.mlp.experts.gate_proj  # [n_exp, hidden_size, intermediate_size]
-                            gate_weights_flat = gate_weights.view(layer.mlp.n_exp, -1)  # [n_exp, hidden_size * intermediate_size]
-                            gate_grad_flat = gate_grad.view(layer.mlp.n_exp, -1)        # [n_exp, hidden_size * intermediate_size]
+                            exp_gate_weights = layer.mlp.experts.gate_proj  # [n_exp, hidden_size, intermediate_size]
+                            exp_gate_gate_weights_mean = exp_gate_weights.mean(dim=-1)      # [n_exp, hidden_size]
                             # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
                             # -(w·∇w) is positive when the update has a component along w (tends to increase ||w||),
                             # and negative when it moves against w (tends to decrease ||w||).                            
-                            alignment = -(gate_weights_flat * gate_grad_flat).sum(dim=1)  # [n_exp]
-                            gate_grad_alignments.append(alignment)
+                            alignment = -(exp_gate_gate_weights_mean * router_gate_grad).sum(dim=1)  # [n_exp]
+                            router_grad_alignments.append(alignment)
+                            # overall_alignment = alignment.sum().item()
+                            # losses[f'router_grad_alignment_{i}'] = overall_alignment
 
-            gate_grad_norms = torch.stack(gate_grad_norms, dim=0) if gate_grad_norms else None
-            losses['gate_grad_norms'] = gate_grad_norms
-            gate_grad_alignments = torch.stack(gate_grad_alignments, dim=0) if gate_grad_alignments else None
-            losses['gate_grad_alignments'] = gate_grad_alignments
+                exp_gate_grad = layer.mlp.experts.gate_proj.grad
+                if exp_gate_grad is not None:
+                    exp_gate_grad_norm = exp_gate_grad.norm(dim=(1,2))
+                    exp_gate_grad_norms.append(exp_gate_grad_norm)
+
+            router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
+            losses['router_grad_norms'] = router_grad_norms
+            router_grad_alignments = torch.stack(router_grad_alignments, dim=0) if router_grad_alignments else None
+            losses['router_grad_alignments'] = router_grad_alignments
+            exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0) if exp_gate_grad_norms else None
+            losses['exp_gate_grad_norms'] = exp_gate_grad_norms
 
         # Only step optimizer(s) every gradient_accumulation_steps iterations
         if (global_iter + 1) % gradient_accumulation_steps == 0:
@@ -960,13 +977,18 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                         log_data["train/drop_rate_0_step"] = drop_rates[0]
                     if len(drop_rates) >= 2:
                         log_data["train/drop_rate_1_step"] = drop_rates[1]
+                for i in range(moe_start_layer, n_layer):
+                    if f'router_grad_norm_{i}' in losses:
+                        log_data.update({f"train/router_grad_norm_{i}": losses[f'router_grad_norm_{i}']})
+
                 wandb.log(log_data, step=persist_global_iter)
 
             if log_expert_util_stats_until_training_iter > 0 and persist_global_iter <= log_expert_util_stats_until_training_iter:
                 write_expert_util_stats(losses['expert_utilities'], 
                                         losses['router_ortho_losses_by_exp'],
-                                        losses['gate_grad_norms'],
-                                        losses['gate_grad_alignments'],
+                                        losses['router_grad_norms'],
+                                        losses['router_grad_alignments'],
+                                        losses['exp_gate_grad_norms'],
                                         f"train-{persist_global_iter:06d}", 
                                         log_expert_util_stats_file)
 

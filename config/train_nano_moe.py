@@ -31,6 +31,8 @@ use_gate_output_loss = True
 # so maybe we should increase its weight.
 router_ortho_loss_weight = 0.01
 router_ortho_neg_corr_weight = 1
+# whether to leave one out when computing router ortho loss
+router_ortho_loss_leave_one_out = False  
 # Experts orthogonality loss as of arXiv:2601.00457.
 # experts_ortho_loss is very small due to squared cosine similarities.
 # So its weight is set higher to have a meaningful effect.

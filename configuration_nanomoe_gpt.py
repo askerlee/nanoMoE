@@ -22,13 +22,14 @@ class GPTConfig(PretrainedConfig):
         use_aux_loss: bool = False,  # apply auxiliary loss (from Switch Transformer) in router
         use_router_z_loss: bool = False,  # apply router z loss (from ST-MoE)
         use_router_ortho_loss: bool = False,  # apply router orthogonality loss
-        use_experts_ortho_loss: bool = True,  # always compute experts orthogonality loss for ablation study
+        use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.01,  # default setting from Switch Transformer (see top of page 8)
         router_z_loss_weight: float = 0.001,  # default setting from ST-MoE (see page 8 eq. 6)
         router_ortho_loss_weight: float = 0.01,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 1,  # weight for negative correlations in router-ortho loss
+        router_ortho_loss_leave_one_out: bool = False,  # leave-one-out setting for router ortho loss
         # experts_ortho_loss is very small due to squared cosine similarities.
         # So its weight is set higher to have a meaningful effect.
         experts_ortho_loss_weight: float = 0.01,
@@ -72,6 +73,7 @@ class GPTConfig(PretrainedConfig):
         self.router_z_loss_weight = router_z_loss_weight
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
+        self.router_ortho_loss_leave_one_out = router_ortho_loss_leave_one_out
         self.experts_ortho_loss_weight = experts_ortho_loss_weight
         self.gate_output_loss_weight = gate_output_loss_weight
         self.projs_diversity_loss_weight = projs_diversity_loss_weight
