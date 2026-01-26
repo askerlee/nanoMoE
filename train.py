@@ -98,10 +98,11 @@ def build_train_loader(dataset, sampler, batch_size, num_workers, device_type, s
         worker_init_fn=lambda worker_id: seed_worker(seed + seed_offset + worker_id)
     )
 
-# expert_utilities:           Tensor of shape (num_eval_iters, num_moe_layers, n_exp).
-# router_ortho_losses_by_exp: Tensor of shape (num_eval_iters, num_moe_layers, n_exp).
+# expert_utilities:           Tensor of shape (num_eval_batches, num_moe_layers, n_exp).
+# router_ortho_losses_by_exp: Tensor of shape (num_eval_batches, num_moe_layers, n_exp).
 def write_expert_util_stats(expert_utilities: torch.Tensor, 
                             router_ortho_losses_by_exp: torch.Tensor, 
+                            gate_grad_norms: torch.Tensor,
                             tag: str, filepath: str) -> None:
     """Persist expert utilization stats to disk under a given tag."""
     if expert_utilities is None:
@@ -109,20 +110,27 @@ def write_expert_util_stats(expert_utilities: torch.Tensor,
     # Append expert_utilities and router_ortho_losses_by_exp to a jsonl file.
     # Only keep 3 digits after the decimal point for expert_utilities and router_ortho_losses_by_exp.
     if expert_utilities is not None:
-        expert_utilities_str_list = [ [f"{u:06.3f}" for u in layer] for layer in expert_utilities.detach().cpu().tolist() ]
+        expert_utilities_str_list = [ [f"{u:08.5f}" for u in layer] for layer in expert_utilities.detach().cpu().tolist() ]
     else:
         expert_utilities_str_list = None
     
+    if gate_grad_norms is not None:
+        gate_grad_norms_str_list = [ [f"{g:08.5f}" for g in layer] for layer in gate_grad_norms.detach().cpu().tolist() ]
+    else:
+        gate_grad_norms_str_list = None
+
     if router_ortho_losses_by_exp is not None:
-        router_ortho_losses_by_exp_str_list = [ [f"{l:06.3f}" for l in layer] for layer in router_ortho_losses_by_exp.detach().cpu().tolist() ]
+        router_ortho_losses_by_exp_str_list = [ [f"{l:08.5f}" for l in layer] for layer in router_ortho_losses_by_exp.detach().cpu().tolist() ]
     else:
         router_ortho_losses_by_exp_str_list = None
 
     record = {
         "tag": tag,
         "expert_utilities":           expert_utilities_str_list,
-        "router_ortho_losses_by_exp": router_ortho_losses_by_exp_str_list
+        "router_ortho_losses_by_exp": router_ortho_losses_by_exp_str_list,
     }
+    if gate_grad_norms is not None:
+        record["gate_grad_norms"] = gate_grad_norms_str_list
 
     with open(filepath, "a", encoding="utf-8") as f:
         f.write(json.dumps(record))
@@ -131,7 +139,7 @@ def write_expert_util_stats(expert_utilities: torch.Tensor,
 
 # estimate validation loss using many batches
 @torch.no_grad()
-def estimate_loss(model, val_loader):
+def estimate_loss(model, val_loader, max_eval_batches):
     model.eval()
 
     val_losses = { 'ntp_loss': 0,
@@ -146,21 +154,21 @@ def estimate_loss(model, val_loader):
                    'expert_utilities': None
                 }
     
-    num_eval_iters = len(val_loader)
+    num_eval_batches = min(max_eval_batches, len(val_loader))
     num_moe_layers = model.config.n_layer - model.config.moe_start_layer
     moe_top_k = model.config.moe_top_k
 
     for key in val_losses:
         if key != 'drop_rate_per_ks' and key != 'expert_utilities' and key != 'router_ortho_losses_by_exp':
-            val_losses[key] = torch.zeros(num_eval_iters, device=device)
+            val_losses[key] = torch.zeros(num_eval_batches, device=device)
         elif key == 'drop_rate_per_ks':
-            val_losses[key] = torch.zeros((num_eval_iters, moe_top_k), device=device)
+            val_losses[key] = torch.zeros((num_eval_batches, moe_top_k), device=device)
         else:  # key == 'expert_utilities' or key == 'router_ortho_losses_by_exp'
-            # num_eval_iters ~ 1000, num_moe_layers = 6, n_exp = 128 => ~ 768K floats, acceptable.
-            val_losses[key] = torch.zeros((num_eval_iters, num_moe_layers, model.config.n_exp), device=device)
+            # num_eval_batches ~ 1000, num_moe_layers = 6, n_exp = 128 => ~ 768K floats, acceptable.
+            val_losses[key] = torch.zeros((num_eval_batches, num_moe_layers, model.config.n_exp), device=device)
 
     for k, (X, Y) in enumerate(val_loader):
-        if k >= num_eval_iters:
+        if k >= num_eval_batches:
             break
         
         if k % log_interval == 0:
@@ -365,6 +373,7 @@ evals_per_epoch = 500  # number of evaluations per epoch
 # eval_every_n_iters will be set based on evals_per_epoch if -1
 # If eval_every_n_iters is provided, will set evals_per_epoch based on it.
 eval_every_n_iters = -1 
+max_eval_batches = -1 # number of batches to use for eval, -1 means use full val set
 warmup_tokens = 500_000_000  # absolute number of tokens for warmup (500M)
 decay_frac = 0.1     # fraction of total steps used for final decay
 load_optimizer_state = True
@@ -762,7 +771,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
         # evaluate the loss on train/val sets and write checkpoints
         if global_iter > 0 and global_iter % eval_every_n_iters == 0 and master_process:
             eval_count += 1
-            val_losses = estimate_loss(model, val_loader)
+            val_losses = estimate_loss(model, val_loader, max_eval_batches=max_eval_batches)
             print(f"epoch {epoch + 1}, step {global_iter}: val loss {val_losses['ntp_loss']:.4f}")
             if wandb_log:
                 log_data = {
@@ -780,6 +789,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 if log_expert_util_stats_during_eval:
                     write_expert_util_stats(val_losses['expert_utilities'], 
                                             val_losses['router_ortho_losses_by_exp'],
+                                            None, # No gate_grad_norms during eval
                                             f"val-{persist_global_iter:06d}", 
                                             log_expert_util_stats_file)
 
@@ -829,7 +839,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
 
         if eval_only and epoch == 0 and batch_idx == 0:
             # Run one evaluation then exit
-            val_losses = estimate_loss(model, val_loader)
+            val_losses = estimate_loss(model, val_loader, max_eval_batches=max_eval_batches)
             print(f"eval_only mode: val loss {val_losses['ntp_loss']:.4f}")
             break
 
@@ -851,6 +861,19 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             # backward pass, with gradient scaling if training in fp16
             with record_function("backward"):
                 scaler.scale(loss).backward()
+
+        if MANAGER.collect_load_balancing_stats:
+            gate_grad_norms = []
+            for i in range(moe_start_layer, n_layer):
+                layer = model.transformer.h[i]
+                if hasattr(layer.mlp, 'experts'):
+                    # [n_exp, hidden_size, intermediate_size]
+                    gate_grad = layer.mlp.experts.gate_proj.grad
+                    if gate_grad is not None:
+                        gate_grad_norm = gate_grad.norm(dim=(1,2))
+                        gate_grad_norms.append(gate_grad_norm)
+            gate_grad_norms = torch.stack(gate_grad_norms, dim=0) if gate_grad_norms else None
+            losses['gate_grad_norms'] = gate_grad_norms
 
         # Only step optimizer(s) every gradient_accumulation_steps iterations
         if (global_iter + 1) % gradient_accumulation_steps == 0:
@@ -921,6 +944,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             if log_expert_util_stats_until_training_iter > 0 and persist_global_iter <= log_expert_util_stats_until_training_iter:
                 write_expert_util_stats(losses['expert_utilities'], 
                                         losses['router_ortho_losses_by_exp'],
+                                        losses['gate_grad_norms'],
                                         f"train-{persist_global_iter:06d}", 
                                         log_expert_util_stats_file)
 

@@ -94,13 +94,10 @@ def diff_weight(param_dict, param_dict2, param_name, param_name_short,
         dims = list(range(len(top_diff.shape)))[1:]
         top_diff_norms    = top_diff.norm(dim=dims)  # [K1]
         bottom_diff_norms = bottom_diff.norm(dim=dims)  # [K2]
-        try:
-            print(f"{param_name_short} top    diff norms:")
-            print(", ".join([smart_format(v, precision=3) for v in top_diff_norms]))
-            print(f"{param_name_short} bottom diff norms:")
-            print(", ".join([smart_format(v, precision=3) for v in bottom_diff_norms]))
-        except:
-            breakpoint()
+        print(f"{param_name_short} top    diff norms:")
+        print(", ".join([smart_format(v, precision=3) for v in top_diff_norms]))
+        print(f"{param_name_short} bottom diff norms:")
+        print(", ".join([smart_format(v, precision=3) for v in bottom_diff_norms]))
 
 param_dict, param_id_to_name = create_param_dicts(model)
 if model2:
