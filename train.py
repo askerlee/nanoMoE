@@ -134,9 +134,8 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
 
                 exp_gate_mean_weight = layer.mlp.experts.gate_proj.mean(dim=2)  # [n_exp, hidden_size]
                 # No negative sign here since these are weights, not gradients.
-                rw_ew_alignment = (exp_gate_mean_weight * router_weight).sum(dim=1) / (
-                    router_weight.norm(dim=1) * exp_gate_mean_weight.norm(dim=1) + 1e-10
-                )  # [n_exp]
+                rw_ew_alignment = (exp_gate_mean_weight * router_weight).sum(dim=1) / \
+                        (router_weight.norm(dim=1) * (exp_gate_mean_weight.norm(dim=1) + 1e-10)) # [n_exp]
                 router_weight_exp_alignments.append(rw_ew_alignment)
                 mean_rw_ew_alignment = rw_ew_alignment.mean().item()
                 losses[f'router_weight_exp_alignment_{i}'] = mean_rw_ew_alignment
@@ -156,6 +155,11 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
                     bottom_rw_ew_alignment = rw_ew_alignment[bottom_indices].mean().item()
                     losses[f'router_weight_exp_alignment_top_{i}']    = top_rw_ew_alignment
                     losses[f'router_weight_exp_alignment_bottom_{i}'] = bottom_rw_ew_alignment
+
+                    top_router_grad_norm    = router_grad_norm[top_indices].mean().item()
+                    bottom_router_grad_norm = router_grad_norm[bottom_indices].mean().item()
+                    losses[f'router_grad_norm_top_{i}']    = top_router_grad_norm
+                    losses[f'router_grad_norm_bottom_{i}'] = bottom_router_grad_norm
 
     router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
     losses['router_grad_norms'] = router_grad_norms
@@ -796,6 +800,7 @@ if use_profiler and master_process:
 
 raw_model = model.module if ddp else model
 
+stop_training = False
 for epoch in range(start_epoch, math.ceil(num_epochs)):
     # If resuming mid-epoch, skip batches
     skip_batches = start_batch_idx if epoch == start_epoch else 0
@@ -839,6 +844,8 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
         
     for batch_idx, (X, Y) in pbar:
         if (global_iter >= total_iters) or (max_training_batches > 0 and batch_idx >= max_training_batches):
+            if max_training_batches > 0 and batch_idx >= max_training_batches:
+                stop_training = True
             break
         grad_norm = None  # Initialize gradient norm for logging
         
@@ -1021,6 +1028,10 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 for i in range(moe_start_layer, n_layer):
                     if f'router_grad_norm_{i}' in losses:
                         log_data.update({f"inspect/router_grad_norm_{i}": losses[f'router_grad_norm_{i}']})
+                    if f'router_grad_norm_top_{i}' in losses:
+                        log_data.update({f"inspect/router_grad_norm_top_{i}": losses[f'router_grad_norm_top_{i}']})
+                    if f'router_grad_norm_bottom_{i}' in losses:
+                        log_data.update({f"inspect/router_grad_norm_bottom_{i}": losses[f'router_grad_norm_bottom_{i}']})
                     if f'router_grad_self_alignment_{i}' in losses:
                         log_data.update({f"inspect/router_grad_self_alignment_{i}": losses[f'router_grad_self_alignment_{i}']})
                     if f'router_grad_self_alignment_top_{i}' in losses:
@@ -1033,7 +1044,6 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                         log_data.update({f"inspect/router_weight_exp_alignment_top_{i}": losses[f'router_weight_exp_alignment_top_{i}']})
                     if f'router_weight_exp_alignment_bottom_{i}' in losses:
                         log_data.update({f"inspect/router_weight_exp_alignment_bottom_{i}": losses[f'router_weight_exp_alignment_bottom_{i}']})
-
                 wandb.log(log_data, step=persist_global_iter)
 
             if log_expert_util_stats_until_training_iter > 0 and persist_global_iter <= log_expert_util_stats_until_training_iter:
@@ -1055,7 +1065,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
         global_iter += 1
         persist_global_iter += 1
 
-    if global_iter >= total_iters:
+    if stop_training or global_iter >= total_iters:
         break
 
 # Stop profiler if it was started
