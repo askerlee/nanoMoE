@@ -159,6 +159,14 @@ for param_id, param_state in state.items():
                     print(f"{router_gate_short_name} bottom-{K2} experts router gate norms:")
                     print(", ".join([smart_format(v, precision=3) for v in bottom_gate_norms.tolist()]))
 
+                # Orthogonality between each pair of router expert gates
+                router_gate_ortho = router_gate @ router_gate.T
+                off_diag_mask = ~torch.eye(router_gate_ortho.size(0), dtype=torch.bool)
+                ortho_mean = router_gate_ortho[off_diag_mask].mean().item()
+                ortho_std  = router_gate_ortho[off_diag_mask].std().item()
+                # ortho_mean should be very close to 0, as router gates are supposed to be orthogonal.
+                print(f"{router_gate_short_name} router gate orthogonality off-diag mean: {ortho_mean:.4f}, std: {ortho_std:.6f}")
+
                 if model2:
                     # Diff router gate
                     diff_weight(param_dict, param_dict2, router_gate_name, router_gate_short_name,

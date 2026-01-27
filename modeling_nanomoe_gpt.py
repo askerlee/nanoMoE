@@ -185,6 +185,10 @@ class Router(nn.Module):
                  # At inference, we just need the top-k
                  top_k_logits, top_k_indices = logits.topk(self.top_k, dim=-1)
 
+
+            selected_scores = self.compute_selected_scores(logits.view(B, T, -1), top_k_indices.view(B, T, -1))
+            MANAGER.add("selected_scores", selected_scores.detach())
+
             # 3. COMPUTE ROUTER PROBABILITIES
             # --------------------------------
             # We normalize the probabilities over the top-k experts
@@ -265,7 +269,34 @@ class Router(nn.Module):
         # equation (4): take a scaled dot product between prob/token allocation vectors
         # multiply the result by the number of experts
         return self.n_exp * torch.sum(prob_per_expert * tokens_per_expert)
-    
+        
+    def compute_selected_scores(self, logits: torch.Tensor, top_k_indices: torch.Tensor):
+        """
+        logits: [B, T, n_exp]  (router logits or scores)
+        top_k_indices: [B, T, k]
+        returns: aux_scores [n_exp]
+        """
+        with torch.no_grad():
+            B, T, n_exp = logits.shape
+            k = top_k_indices.shape[-1]
+
+            # counts per expert over (B,T,k)
+            one_hot = F.one_hot(top_k_indices, num_classes=n_exp).float()   # [B,T,k,n_exp]
+            counts = one_hot.sum(dim=(0, 1, 2))                              # [n_exp]
+            total = counts.sum().clamp_min(1.0)
+
+            # frequency over assignments (sums to 1)
+            tokens_per_expert = counts / total                               # [n_exp]
+
+            # sum of selected logits per expert
+            sel_logits = logits.gather(-1, top_k_indices)                    # [B,T,k]
+            score_sum = (sel_logits.unsqueeze(-1) * one_hot).sum(dim=(0,1,2))# [n_exp]
+
+            # mean logit given selected
+            mean_selected_scores = score_sum / counts.clamp_min(1.0)          # [n_exp]
+            return mean_selected_scores
+
+        
     def compute_router_z_loss(self, logits: torch.Tensor):
         """
         Computes ST-MoE router z loss (https://arxiv.org/abs/2202.08906)
@@ -860,7 +891,8 @@ class GPT(PreTrainedModel, GenerationMixin):
                    'projs_diversity_loss': 0,
                    'router_ortho_losses_by_exp': None,
                    'drop_rate_per_ks': None,
-                   'expert_utilities': None
+                   'expert_utilities': None,
+                   'selected_scores':  None,
                  }
 
         # Always compute logits for all positions (HuggingFace standard)
@@ -915,7 +947,10 @@ class GPT(PreTrainedModel, GenerationMixin):
         drop_rate_per_ks = MANAGER.aggregate("drop_rate_per_ks")
         losses['drop_rate_per_ks'] = drop_rate_per_ks.detach() if drop_rate_per_ks is not None else None
         MANAGER.reset("drop_rate_per_ks")
-        
+        selected_scores = MANAGER.aggregate("selected_scores")
+        losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
+        MANAGER.reset("selected_scores")
+
         if not return_dict:
             # Legacy return format: (logits, loss, losses)
             return logits, loss, losses

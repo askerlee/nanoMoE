@@ -19,6 +19,7 @@ class MOEManager:
             "router_ortho_losses_by_exp": [],
             "drop_rate_per_ks": [],
             "expert_utilities": [],
+            "selected_scores": [],
         }
         self._tensor_var_capacity = 32
         self._drop_rate_buffer = None
@@ -27,6 +28,8 @@ class MOEManager:
         self._expert_utilities_size = 0
         self._router_ortho_losses_by_exp_buffer = None
         self._router_ortho_losses_by_exp_size = 0
+        self._selected_scores_buffer = None
+        self._selected_scores_size = 0
         self._start_frac_names = {
             "router_ortho_loss",
             "experts_ortho_loss",
@@ -35,7 +38,8 @@ class MOEManager:
         }
         self.tensor_var_names = set(["router_ortho_losses_by_exp", 
                                      "drop_rate_per_ks", 
-                                     "expert_utilities"])
+                                     "expert_utilities",
+                                     "selected_scores"])
 
     def reset(self, name):
         if name == "drop_rate_per_ks":
@@ -46,6 +50,9 @@ class MOEManager:
             return
         if name == "router_ortho_losses_by_exp":
             self._router_ortho_losses_by_exp_size = 0
+            return
+        if name == "selected_scores":
+            self._selected_scores_size = 0
             return
         self._values[name] = []
 
@@ -83,6 +90,17 @@ class MOEManager:
             self._router_ortho_losses_by_exp_buffer[self._router_ortho_losses_by_exp_size:new_size].copy_(value)
             self._router_ortho_losses_by_exp_size = new_size
             return
+        if name == "selected_scores":
+            if self._selected_scores_buffer is None:
+                self._selected_scores_buffer = torch.empty(
+                    (self._tensor_var_capacity, value.shape[0]),
+                    device=value.device,
+                    dtype=value.dtype,
+                )
+            new_size = self._selected_scores_size + 1
+            self._selected_scores_buffer[self._selected_scores_size:new_size].copy_(value)
+            self._selected_scores_size = new_size
+            return
         if name not in self._values:
             self._values[name] = []
         self._values[name].append(value)
@@ -113,6 +131,11 @@ class MOEManager:
             values = self._router_ortho_losses_by_exp_buffer[:self._router_ortho_losses_by_exp_size]
             # Return the whole 2D tensor of router_ortho_losses by layers and by exp, 
             # since different layers have different losses, and averaging them does not make sense.
+            return values
+        elif name == "selected_scores":
+            if self._selected_scores_buffer is None or self._selected_scores_size == 0:
+                return None
+            values = self._selected_scores_buffer[:self._selected_scores_size]
             return values
         else:
             return sum(values)

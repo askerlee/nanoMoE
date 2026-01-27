@@ -100,10 +100,10 @@ def build_train_loader(dataset, sampler, batch_size, num_workers, device_type, s
 
 def collect_grad_stats(model, losses, moe_start_layer, n_layer):
     router_grad_norms = []
-    router_grad_self_alignments = []
     router_weight_exp_alignments = []
     exp_gate_grad_norms = []
     expert_utilities = losses.get('expert_utilities', None)
+    selected_scores = losses.get('selected_scores', None)
 
     for i in range(moe_start_layer, n_layer):
         layer = model.transformer.h[i]
@@ -118,20 +118,9 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
             exp_gate_grad_norms.append(exp_gate_grad_norm)
             losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
 
-            # Compute router grad - router weight alignment
+            # Compute router expert - gate weight alignment
             with torch.no_grad():
                 router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
-                # Compute the cosine similarity between router weights and router weight grads.
-                # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
-                # -(w·∇w) is positive when the update has a component along w (tends to increase ||w||),
-                # and negative when it moves against w (tends to decrease ||w||). 
-                rg_rw_alignment = -(router_gate_grad * router_weight).sum(dim=1) / (
-                    router_weight.norm(dim=1) * router_gate_grad.norm(dim=1) + 1e-10
-                )  # [n_exp]
-                router_grad_self_alignments.append(rg_rw_alignment)
-                mean_rg_rw_alignment = rg_rw_alignment.mean().item()
-                losses[f'router_grad_self_alignment_{i}'] = mean_rg_rw_alignment
-
                 exp_gate_mean_weight = layer.mlp.experts.gate_proj.mean(dim=2)  # [n_exp, hidden_size]
                 # No negative sign here since these are weights, not gradients.
                 rw_ew_alignment = (exp_gate_mean_weight * router_weight).sum(dim=1) / \
@@ -146,10 +135,6 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
                     half_experts = exp_utilities.shape[0] // 2
                     top_indices    = torch.topk(exp_utilities, k=half_experts, largest=True).indices
                     bottom_indices = torch.topk(exp_utilities, k=half_experts, largest=False).indices
-                    top_rg_rw_alignment    = rg_rw_alignment[top_indices].mean().item()
-                    bottom_rg_rw_alignment = rg_rw_alignment[bottom_indices].mean().item()
-                    losses[f'router_grad_self_alignment_top_{i}']    = top_rg_rw_alignment
-                    losses[f'router_grad_self_alignment_bottom_{i}'] = bottom_rg_rw_alignment
 
                     top_rw_ew_alignment    = rw_ew_alignment[top_indices].mean().item()
                     bottom_rw_ew_alignment = rw_ew_alignment[bottom_indices].mean().item()
@@ -161,10 +146,16 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
                     losses[f'router_grad_norm_top_{i}']    = top_router_grad_norm
                     losses[f'router_grad_norm_bottom_{i}'] = bottom_router_grad_norm
 
+                    if selected_scores is not None:
+                        # selected_scores: Tensor of shape (num_moe_layers, n_exp)
+                        layer_selected_scores = selected_scores[i - moe_start_layer]  # [n_exp]
+                        top_selected_scores    = layer_selected_scores[top_indices].mean().item()
+                        bottom_selected_scores = layer_selected_scores[bottom_indices].mean().item()
+                        losses[f'selected_scores_top_{i}']    = top_selected_scores
+                        losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
+
     router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
     losses['router_grad_norms'] = router_grad_norms
-    router_grad_self_alignments = torch.stack(router_grad_self_alignments, dim=0) if router_grad_self_alignments else None
-    losses['router_grad_self_alignments'] = router_grad_self_alignments
     router_weight_exp_alignments = torch.stack(router_weight_exp_alignments, dim=0) if router_weight_exp_alignments else None
     losses['router_weight_exp_alignments'] = router_weight_exp_alignments
     exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0) if exp_gate_grad_norms else None
@@ -173,8 +164,8 @@ def collect_grad_stats(model, losses, moe_start_layer, n_layer):
 # expert_utilities:           Tensor of shape (num_eval_batches, num_moe_layers, n_exp).
 # router_ortho_losses_by_exp: Tensor of shape (num_eval_batches, num_moe_layers, n_exp).
 def write_expert_util_stats(expert_utilities: torch.Tensor, 
+                            selected_scores: torch.Tensor,
                             router_ortho_losses_by_exp: torch.Tensor, 
-                            router_grad_self_alignments: torch.Tensor,
                             router_weight_exp_alignments: torch.Tensor,
                             router_grad_norms: torch.Tensor,
                             exp_gate_grad_norms: torch.Tensor,
@@ -190,6 +181,12 @@ def write_expert_util_stats(expert_utilities: torch.Tensor,
     else:
         expert_utilities_str_list = None
 
+    if selected_scores is not None:
+        selected_scores_str_list = [ [f"{s:08.5f}" for s in layer] for layer in selected_scores.detach().cpu().tolist() ]
+        record["selected_scores"] = selected_scores_str_list
+    else:
+        selected_scores_str_list = None
+
     if router_ortho_losses_by_exp is not None:
         router_ortho_losses_by_exp_str_list = [ [f"{l:08.5f}" for l in layer] for layer in router_ortho_losses_by_exp.detach().cpu().tolist() ]
         record["router_ortho_losses_by_exp"] = router_ortho_losses_by_exp_str_list
@@ -201,12 +198,6 @@ def write_expert_util_stats(expert_utilities: torch.Tensor,
         record["router_grad_norms"] = router_grad_norms_str_list
     else:
         router_grad_norms_str_list = None
-
-    if router_grad_self_alignments is not None:
-        router_grad_self_alignments_str_list = [ [f"{g:08.5f}" for g in layer] for layer in router_grad_self_alignments.detach().cpu().tolist() ]
-        record["router_grad_self_alignments"] = router_grad_self_alignments_str_list
-    else:
-        router_grad_self_alignments_str_list = None
 
     if router_weight_exp_alignments is not None:
         router_weight_exp_alignments_str_list = [ [f"{g:08.5f}" for g in layer] for layer in router_weight_exp_alignments.detach().cpu().tolist() ]
@@ -246,6 +237,7 @@ def estimate_loss(model, val_loader, max_eval_batches):
         'router_ortho_losses_by_exp':   None,
         'drop_rate_per_ks':             None,
         'expert_utilities':             None,
+        'selected_scores':              None,
     }
 
     for k, (X, Y) in enumerate(val_loader):
@@ -275,7 +267,7 @@ def estimate_loss(model, val_loader, max_eval_batches):
                     if val_losses[key] is None:
                         val_losses[key] = torch.zeros((num_eval_batches, moe_top_k), device=device)
                     val_losses[key][k] = losses[key]
-            elif key in ('expert_utilities', 'router_ortho_losses_by_exp'):
+            elif key in ('expert_utilities', 'router_ortho_losses_by_exp', 'selected_scores'):
                 if losses.get(key) is not None:
                     if val_losses[key] is None:
                         val_losses[key] = torch.zeros((num_eval_batches, num_moe_layers, model.config.n_exp), device=device)
@@ -881,8 +873,8 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 wandb.log(log_data, step=persist_global_iter)
                 if log_expert_util_stats_during_eval:
                     write_expert_util_stats(val_losses['expert_utilities'], 
+                                            val_losses['selected_scores'],
                                             val_losses['router_ortho_losses_by_exp'],
-                                            None, # No router_grad_self_alignments during eval
                                             None, # No router_weight_exp_alignments during eval
                                             None, # No router_grad_norms during eval
                                             None, # No exp_gate_grad_norms during eval
@@ -1032,24 +1024,23 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                         log_data.update({f"inspect/router_grad_norm_top_{i}": losses[f'router_grad_norm_top_{i}']})
                     if f'router_grad_norm_bottom_{i}' in losses:
                         log_data.update({f"inspect/router_grad_norm_bottom_{i}": losses[f'router_grad_norm_bottom_{i}']})
-                    if f'router_grad_self_alignment_{i}' in losses:
-                        log_data.update({f"inspect/router_grad_self_alignment_{i}": losses[f'router_grad_self_alignment_{i}']})
-                    if f'router_grad_self_alignment_top_{i}' in losses:
-                        log_data.update({f"inspect/router_grad_self_alignment_top_{i}": losses[f'router_grad_self_alignment_top_{i}']})
-                    if f'router_grad_self_alignment_bottom_{i}' in losses:
-                        log_data.update({f"inspect/router_grad_self_alignment_bottom_{i}": losses[f'router_grad_self_alignment_bottom_{i}']})
                     if f'router_grad_exp_alignment_{i}' in losses:
                         log_data.update({f"inspect/router_grad_exp_alignment_{i}": losses[f'router_grad_exp_alignment_{i}']})
                     if f'router_weight_exp_alignment_top_{i}' in losses:
                         log_data.update({f"inspect/router_weight_exp_alignment_top_{i}": losses[f'router_weight_exp_alignment_top_{i}']})
                     if f'router_weight_exp_alignment_bottom_{i}' in losses:
                         log_data.update({f"inspect/router_weight_exp_alignment_bottom_{i}": losses[f'router_weight_exp_alignment_bottom_{i}']})
+                    if f'selected_scores_top_{i}' in losses:
+                        log_data.update({f"inspect/selected_scores_top_{i}": losses[f'selected_scores_top_{i}']})
+                    if f'selected_scores_bottom_{i}' in losses:
+                        log_data.update({f"inspect/selected_scores_bottom_{i}": losses[f'selected_scores_bottom_{i}']})
+                        
                 wandb.log(log_data, step=persist_global_iter)
 
             if log_expert_util_stats_until_training_iter > 0 and persist_global_iter <= log_expert_util_stats_until_training_iter:
                 write_expert_util_stats(losses['expert_utilities'], 
+                                        losses['selected_scores'],
                                         losses['router_ortho_losses_by_exp'],
-                                        losses['router_grad_self_alignments'],
                                         losses['router_weight_exp_alignments'],
                                         losses['router_grad_norms'],
                                         losses['exp_gate_grad_norms'],
