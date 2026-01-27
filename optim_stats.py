@@ -125,9 +125,8 @@ for param_id, param_state in state.items():
             experts_grad_norms_by_expert = param_state['exp_avg'].norm(dim=(1,2))  # [n_exp]
             # Find the top-32 and bottom-96 norms
             K1, K2 = args.topk, args.bottomk
-            topk_experts_grad_norms, topk_indices       = torch.topk(experts_grad_norms_by_expert, K1)
-            bottomk_experts_grad_norms, bottomk_indices = torch.topk(-experts_grad_norms_by_expert, K2)
-            bottomk_experts_grad_norms      = -bottomk_experts_grad_norms
+            topk_experts_grad_norms, topk_indices       = torch.topk(experts_grad_norms_by_expert, K1, largest=True)
+            bottomk_experts_grad_norms, bottomk_indices = torch.topk(experts_grad_norms_by_expert, K2, largest=False)
             topk_experts_grad_norm_mean     = topk_experts_grad_norms.mean().item()
             bottomk_experts_grad_norm_mean  = bottomk_experts_grad_norms.mean().item()
             param_group_stat_dict['experts'][param_name]['topk_experts_grad_norm_mean']          = topk_experts_grad_norm_mean
