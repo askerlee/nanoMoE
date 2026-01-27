@@ -70,7 +70,7 @@ decay_frac = 0.1
 
 # logging and eval stuff
 eval_iters = 200
-log_interval = 25
+log_interval = 10
 
 # weight decay
 weight_decay = 1e-1
