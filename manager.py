@@ -56,6 +56,7 @@ class MOEManager:
             return
         self._values[name] = []
 
+    @torch._dynamo.disable
     def add(self, name, value):
         if name == "drop_rate_per_ks":
             if self._drop_rate_buffer is None:
