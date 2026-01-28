@@ -101,8 +101,6 @@ class MOEManager:
             self._selected_scores_buffer[self._selected_scores_size:new_size].copy_(value)
             self._selected_scores_size = new_size
             return
-        if name not in self._values:
-            self._values[name] = []
         self._values[name].append(value)
 
     def aggregate(self, name):

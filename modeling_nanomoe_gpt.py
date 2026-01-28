@@ -723,6 +723,8 @@ class GPT(PreTrainedModel, GenerationMixin):
         print("number of active parameters (n_exp=%d, top_k=%d): %.2fM" % (
               config.n_exp, config.moe_top_k, self.get_num_active_params(config.n_exp, config.moe_top_k)/1e6))
     
+        self.global_iter = 0
+
     def get_input_embeddings(self):
         return self.transformer.wte
     
@@ -951,6 +953,10 @@ class GPT(PreTrainedModel, GenerationMixin):
         losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
         MANAGER.reset("selected_scores")
 
+        if False and self.global_iter >= 1000:
+            # To debug router z loss, we need the properly weighted, un-detached loss to do manual backward.
+            self.debug_losses(losses, losses_to_debug=[self.config.router_z_loss_weight * router_z_loss])
+
         if not return_dict:
             # Legacy return format: (logits, loss, losses)
             return logits, loss, losses
@@ -963,6 +969,98 @@ class GPT(PreTrainedModel, GenerationMixin):
             hidden_states=None,
             attentions=None,
         )
+
+    # Revised from collect_grad_stats().
+    def debug_losses(self, losses, losses_to_debug=[]):
+        router_grad_norms = []
+        router_grad_self_alignments = []
+        router_weight_exp_alignments = []
+        exp_gate_grad_norms = []
+        expert_utilities = losses.get('expert_utilities', None)
+        selected_scores = losses.get('selected_scores', None)
+
+        for loss in losses_to_debug:
+            if loss is not None and isinstance(loss, torch.Tensor):
+                loss.backward(retain_graph=True)
+            else:
+                breakpoint()
+
+        for i in range(self.config.moe_start_layer, self.config.n_layer):
+            layer = self.transformer.h[i]
+            if hasattr(layer.mlp, 'experts'):
+                # [n_exp, hidden_size]
+                router_gate_grad = layer.mlp.router.w_g.weight.grad
+                router_grad_norm = router_gate_grad.norm(dim=1)
+                router_grad_norms.append(router_grad_norm)
+                losses[f'router_grad_norm_{i}'] = router_grad_norm.mean().item()
+                exp_gate_grad = layer.mlp.experts.gate_proj.grad
+                if exp_gate_grad is not None:
+                    exp_gate_grad_norm = exp_gate_grad.norm(dim=(1,2))
+                    exp_gate_grad_norms.append(exp_gate_grad_norm)
+                    losses[f'exp_gate_grad_norm_{i}'] = exp_gate_grad_norm.mean().item()
+
+                # Compute router grad - router weight alignment
+                # Compute router expert - gate weight alignment
+                with torch.no_grad():
+                    router_weight = layer.mlp.router.w_g.weight  # [n_exp, hidden_size]
+                    exp_gate_mean_weight = layer.mlp.experts.gate_proj.mean(dim=2)  # [n_exp, hidden_size]
+                    # Compute the cosine similarity between router weights and router weight grads.
+                    # With SGD: Δw = -lr * ∇w. Since w·Δw = -lr*(w·∇w),
+                    # -(w·∇w) is positive when the update has a component along w (tends to increase ||w||),
+                    # and negative when it moves against w (tends to decrease ||w||). 
+                    rg_rw_alignment = -(router_gate_grad * router_weight).sum(dim=1) / (
+                        router_weight.norm(dim=1) * router_gate_grad.norm(dim=1) + 1e-10
+                    )  # [n_exp]
+                    router_grad_self_alignments.append(rg_rw_alignment)
+                    mean_rg_rw_alignment = rg_rw_alignment.mean().item()
+                    losses[f'router_grad_self_alignment_{i}'] = mean_rg_rw_alignment
+
+                    # No negative sign here since these are weights, not gradients.
+                    rw_ew_alignment = (exp_gate_mean_weight * router_weight).sum(dim=1) / \
+                            (router_weight.norm(dim=1) * (exp_gate_mean_weight.norm(dim=1) + 1e-10)) # [n_exp]
+                    router_weight_exp_alignments.append(rw_ew_alignment)
+                    mean_rw_ew_alignment = rw_ew_alignment.mean().item()
+                    losses[f'router_weight_exp_alignment_{i}'] = mean_rw_ew_alignment
+
+                    if expert_utilities is not None:
+                        # expert_utilities: Tensor of shape (num_moe_layers, n_exp)
+                        exp_utilities = expert_utilities[i - self.config.moe_start_layer]  # [n_exp]
+                        half_experts = exp_utilities.shape[0] // 2
+                        top_indices    = torch.topk(exp_utilities, k=half_experts, largest=True).indices
+                        bottom_indices = torch.topk(exp_utilities, k=half_experts, largest=False).indices
+
+                        top_rg_rw_alignment    = rg_rw_alignment[top_indices].mean().item()
+                        bottom_rg_rw_alignment = rg_rw_alignment[bottom_indices].mean().item()
+                        losses[f'router_grad_self_alignment_top_{i}']    = top_rg_rw_alignment
+                        losses[f'router_grad_self_alignment_bottom_{i}'] = bottom_rg_rw_alignment
+
+                        top_rw_ew_alignment    = rw_ew_alignment[top_indices].mean().item()
+                        bottom_rw_ew_alignment = rw_ew_alignment[bottom_indices].mean().item()
+                        losses[f'router_weight_exp_alignment_top_{i}']    = top_rw_ew_alignment
+                        losses[f'router_weight_exp_alignment_bottom_{i}'] = bottom_rw_ew_alignment
+
+                        top_router_grad_norm    = router_grad_norm[top_indices].mean().item()
+                        bottom_router_grad_norm = router_grad_norm[bottom_indices].mean().item()
+                        losses[f'router_grad_norm_top_{i}']    = top_router_grad_norm
+                        losses[f'router_grad_norm_bottom_{i}'] = bottom_router_grad_norm
+
+                        if selected_scores is not None:
+                            # selected_scores: Tensor of shape (num_moe_layers, n_exp)
+                            layer_selected_scores = selected_scores[i - self.config.moe_start_layer]  # [n_exp]
+                            top_selected_scores    = layer_selected_scores[top_indices].mean().item()
+                            bottom_selected_scores = layer_selected_scores[bottom_indices].mean().item()
+                            losses[f'selected_scores_top_{i}']    = top_selected_scores
+                            losses[f'selected_scores_bottom_{i}'] = bottom_selected_scores
+
+        router_grad_norms = torch.stack(router_grad_norms, dim=0) if router_grad_norms else None
+        losses['router_grad_norms'] = router_grad_norms
+        router_grad_self_alignments = torch.stack(router_grad_self_alignments, dim=0) if router_grad_self_alignments else None
+        losses['router_grad_self_alignments'] = router_grad_self_alignments
+        router_weight_exp_alignments = torch.stack(router_weight_exp_alignments, dim=0) if router_weight_exp_alignments else None
+        losses['router_weight_exp_alignments'] = router_weight_exp_alignments
+        exp_gate_grad_norms = torch.stack(exp_gate_grad_norms, dim=0) if exp_gate_grad_norms else None
+        losses['exp_gate_grad_norms'] = exp_gate_grad_norms
+        breakpoint()
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
