@@ -4,6 +4,7 @@
 .vscode
 __pycache__/
 *.bin
+*.idx
 *.pkl
 *.pt
 *.pyc

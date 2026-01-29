@@ -125,6 +125,51 @@ class ChunkDataset(torch.utils.data.Dataset):
         y = torch.from_numpy(self.data[start + 1 : start + self.block_size + 1]).long()
         return x, y
 
+class BoundaryChunkDataset(torch.utils.data.Dataset):
+    """
+    Whole-sample dataset using boundaries defined by a .idx file.
+    Each .idx entry is (start, length) in tokens for one sample.
+    Samples longer than max_length are discarded; shorter samples are padded.
+    pad_token_id: default 50256 (GPT-2 eos token).
+    """
+    def __init__(self, bin_path: str, idx_path: str, max_length: int = 1024, pad_token_id: int = 50256):
+        self.data        = np.memmap(bin_path, dtype=np.uint16, mode='r')
+        raw_idx          = np.memmap(idx_path, dtype=np.int64, mode='r')
+        if len(raw_idx) % 2 != 0:
+            raise ValueError(f"Invalid idx file (odd length): {idx_path}")
+        self.idx          = raw_idx.reshape(-1, 2)
+        self.max_length   = int(max_length)
+        self.pad_token_id = int(pad_token_id)
+
+        if self.max_length <= 1:
+            raise ValueError("max_length must be > 1")
+
+        lengths = self.idx[:, 1].astype(np.int64)
+        self.valid_indices = np.where(lengths <= self.max_length)[0]
+
+    def __len__(self):
+        return len(self.valid_indices)
+
+    def __getitem__(self, idx: int):
+        real_idx = int(self.valid_indices[idx])
+        start  = int(self.idx[real_idx, 0])
+        length = int(self.idx[real_idx, 1])
+        if length < 2:
+            raise ValueError(f"Sample too short (len={length}) at idx={real_idx}")
+
+        tokens = self.data[start : start + length].astype(np.int64, copy=False)
+        x = torch.from_numpy(tokens).long()
+
+        if length < self.max_length:
+            pad_len = self.max_length - length
+            pad = torch.full((pad_len,), self.pad_token_id, dtype=torch.long)
+            x   = torch.cat([x, pad], dim=0)
+
+        y = torch.empty_like(x)
+        y[:-1] = x[1:]
+        y[-1] = self.pad_token_id
+        return x, y
+
 def get_dataloader(
     data_dir: str,
     split: str = "train", 

@@ -33,7 +33,7 @@ from transformers import GPT2TokenizerFast
 
 from modeling_nanomoe_gpt import GPTConfig, GPT
 from manager import MANAGER
-from data.tinystories.dataloader import ChunkDataset
+from data.tinystories.dataloader import ChunkDataset, BoundaryChunkDataset
 import numpy as np
 import random
 
@@ -568,13 +568,20 @@ for dataset in datasets:
     else:
         train_filename = "train.bin"
         val_filename   = "val.bin"
-
+        
     data_dir = os.path.join('data', dataset)
     train_bin_path = os.path.join(data_dir, train_filename)
     val_bin_path = os.path.join(data_dir, val_filename)
-    
-    train_dataset = ChunkDataset(train_bin_path, block_size)
-    val_dataset = ChunkDataset(val_bin_path, block_size)
+
+    if "math" not in dataset:
+        train_dataset = ChunkDataset(train_bin_path, block_size)
+        val_dataset = ChunkDataset(val_bin_path, block_size)
+    else:
+        train_idx_path = train_bin_path.replace('.bin', '.idx')
+        val_idx_path   = val_bin_path.replace('.bin', '.idx')
+        train_dataset  = BoundaryChunkDataset(train_bin_path, train_idx_path, block_size)
+        val_dataset    = BoundaryChunkDataset(val_bin_path, val_idx_path, block_size)
+
     print(f"Loaded dataset {dataset_} ({train_bin_path}, {val_bin_path}):")
     print(f"  train tokens: {len(train_dataset.data):,}")
     print(f"  val tokens: {len(val_dataset.data):,}")
