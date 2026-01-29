@@ -24,3 +24,4 @@ wandb/
 *.zst*
 draft.txt
 *.jsonl
+*.json

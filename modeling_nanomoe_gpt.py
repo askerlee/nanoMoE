@@ -724,6 +724,10 @@ class GPT(PreTrainedModel, GenerationMixin):
               config.n_exp, config.moe_top_k, self.get_num_active_params(config.n_exp, config.moe_top_k)/1e6))
     
         self.global_iter = 0
+        # For compatibility with lm-eval.
+        self.num_hidden_layers   = config.n_layer
+        self.num_attention_heads = config.n_head
+        self.hidden_size         = config.n_embd
 
     def get_input_embeddings(self):
         return self.transformer.wte

@@ -60,6 +60,9 @@ class GPTConfig(PretrainedConfig):
         self.n_layer = n_layer
         self.n_head = n_head
         self.n_embd = n_embd
+        self.num_hidden_layers = n_layer    # For compatibility with lm-eval
+        self.num_attention_heads = n_head   # For compatibility with lm-eval
+        self.hidden_size = n_embd           # For compatibility with lm-eval
         self.bias = bias
         self.n_exp = n_exp
         self.moe_top_k = moe_top_k  # Store with moe_ prefix to avoid HF generation conflict
