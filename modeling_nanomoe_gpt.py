@@ -1077,8 +1077,7 @@ class GPT(PreTrainedModel, GenerationMixin):
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
 
-    def setup_optimizers(self, weight_decay, learning_rate, betas, device_type, embeddings_in_own_group=True):
-        # TODO: add expert config
+    def setup_optimizers2(self, learning_rate, weight_decay, betas):
         decay_params = []
         nodecay_params = []
         embedding_params = []
@@ -1097,7 +1096,7 @@ class GPT(PreTrainedModel, GenerationMixin):
             is_bias = name.endswith('bias')
             is_embedding_weight = name.endswith(embedding_suffixes)
 
-            if embeddings_in_own_group and is_embedding_weight:
+            if is_embedding_weight:
                 embedding_params.append(param)
             elif param.dim() >= 2 and not is_bias:
                 decay_params.append(param)
@@ -1107,21 +1106,19 @@ class GPT(PreTrainedModel, GenerationMixin):
         optim_groups = [
             {'params': decay_params, 'weight_decay': weight_decay},
             {'params': nodecay_params, 'weight_decay': 0.0},
+            {'params': embedding_params, 'weight_decay': 0.0}
         ]
-        if embeddings_in_own_group:
-            optim_groups.append({'params': embedding_params, 'weight_decay': 0.0})
 
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
         print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
         print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
-        if embeddings_in_own_group:
-            num_embedding_params = sum(p.numel() for p in embedding_params)
-            print(f"num embedding parameter tensors: {len(embedding_params)}, with {num_embedding_params:,} parameters")
+        num_embedding_params = sum(p.numel() for p in embedding_params)
+        print(f"num embedding parameter tensors: {len(embedding_params)}, with {num_embedding_params:,} parameters")
 
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available and device_type == 'cuda'
+        use_fused = fused_available
         if use_fused:
             dtype_device_pairs = {
                 (param.dtype, str(param.device))
@@ -1142,31 +1139,40 @@ class GPT(PreTrainedModel, GenerationMixin):
 
         return optimizer
 
-    # TODO: integrate setup_optimizers() from nanochat, and remove the above configure_optimizers.
-    # It create optim groups. Any parameters that is 2D will be in Muon and weight decayed, otherwise no.
-    # i.e. all weight tensors in matmuls decay, and all embeddings, biases and layernorms don't.
-    # In the original nanoMoE code, embeddings are decayed which is not a good practice.
-    # Otherwise, this is the same as nanoMoE's setup_optimizers().
-    # add an extra check for "bias" string to account for bias terms in MoE layers
-    def setup_optimizers2(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.8, 0.95), scalar_lr=0.5):
-        model_dim = self.config.n_embd
-        ddp, rank, local_rank, world_size = get_dist_info()
-        # Separate out all parameters into 4 groups (matrix, embedding, ln_f, position_embedding)
-        matrix_params = list(self.transformer.h.parameters())
-        embedding_params = list(self.transformer.wte.parameters())
-        position_embedding_params = list(self.transformer.wpe.parameters())
-        # Don't include lm_head_params here, as those are tied with embedding_params.
-        ln_f_params = list(self.transformer.ln_f.parameters())
-        assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) \
-                        + len(position_embedding_params) + len(ln_f_params)
-        # Create the AdamW optimizer for the embedding, ln_f, and per-layer scalars
-        # Scale the LR for the AdamW parameters by ∝1/√dmodel (having tuned the LRs for 768 dim model)
-        dmodel_lr_scale = (model_dim / 768) ** -0.5
-        print(f"Scaling the LR for the AdamW parameters ∝1/√({model_dim}/768) = {dmodel_lr_scale:.6f}")
+    # Revised from the nanochat setup_optimizers() with a little customization.
+    def setup_optimizers(self, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.8, 0.95)):
+        ddp = get_dist_info()[0]
+
+        # Separate out all parameters into 3 groups (matrix, embeddings, other 1D params, e.g. RMSNorm)
+        matrix_params = []
+        onedim_params = []
+        embedding_params = []
+        handled_params = set()
+        # lm_head weight is tied to wte weight, so include it in embedding params
+        embedding_suffixes = ('wte.weight', 'wpe.weight', 'lm_head.weight')
+
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+            pid = id(param)
+            if pid in handled_params:
+                continue
+            handled_params.add(pid)
+
+            is_bias = name.endswith('bias')
+            is_embedding_weight = name.endswith(embedding_suffixes)
+
+            if is_embedding_weight:
+                embedding_params.append(param)
+            elif param.dim() >= 2 and not is_bias:
+                matrix_params.append(param)
+            else:
+                onedim_params.append(param)
+
+        # Create the AdamW optimizer for the embedding and 1d params
         adam_groups = [
-            dict(params=embedding_params, lr=embedding_lr * dmodel_lr_scale),
-            dict(params=position_embedding_params, lr=embedding_lr * dmodel_lr_scale),
-            dict(params=ln_f_params, lr=embedding_lr * dmodel_lr_scale),
+            dict(params=embedding_params, lr=embedding_lr),
+            dict(params=onedim_params, lr=embedding_lr),
         ]
         adamw_kwargs = dict(betas=adam_betas, eps=1e-10, weight_decay=0.0) # NOTE: weight decay is hardcoded to 0.0 for AdamW, only used in Muon
         AdamWFactory = DistAdamW if ddp else partial(torch.optim.AdamW, fused=True)
@@ -1177,6 +1183,9 @@ class GPT(PreTrainedModel, GenerationMixin):
         muon_optimizer = MuonFactory(matrix_params, **muon_kwargs)
         # Combine them the two optimizers into one list
         optimizers = [adamw_optimizer, muon_optimizer]
+        # Used as references for LR schedulers in train.py.
+        adamw_optimizer.base_lr = embedding_lr
+        muon_optimizer.base_lr  = matrix_lr
         for opt in optimizers:
             for group in opt.param_groups:
                 group["initial_lr"] = group["lr"]

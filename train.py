@@ -319,80 +319,6 @@ def get_lr(learning_rate: float, it: int) -> float:
     decay_ratio = (it - decay_start) / float(max(1, decay_iters))
     return learning_rate * (1 - math.sqrt(decay_ratio))
 
-# Only useful when loading old checkpoints that did not separate embeddings into their own group.
-def separate_embeddings_in_own_group(model, optimizer, weight_decay):
-    """Separate embedding parameters into their own parameter group in the optimizer."""
-    # Snapshot original groups/options
-    old_groups = optimizer.param_groups
-    # Reorganize param_groups: separate embeddings from other parameters
-    # Build a mapping of parameter id to name
-    param_name_map = {id(p): n for n, p in model.named_parameters()}
-
-    # Map param_id -> old_group_options (so we can preserve lr/betas/eps/etc)
-    pid_to_options = {}
-    pid_to_param   = {}
-    for g in old_groups:
-        options = {k: v for k, v in g.items() if k != "params"}
-        for p in g["params"]:
-            pid = id(p)
-            pid_to_param[pid] = p
-            # if a param appears in multiple groups (shouldn't), first wins
-            pid_to_options.setdefault(pid, options)
-
-    # Classify params
-    embedding_pids = set()
-    decay_pids = set()
-    nodecay_pids = set()
-
-    for pid, p in pid_to_param.items():
-        name = param_name_map.get(pid, "")
-        is_emb = ("wte" in name) or ("wpe" in name)
-        if is_emb:
-            embedding_pids.add(pid)
-            continue
-
-        # Use original grouping to decide decay vs no-decay
-        options = pid_to_options.get(pid, {})
-        if options.get("weight_decay", 0.0) > 0:
-            decay_pids.add(pid)
-        else:
-            nodecay_pids.add(pid)
-
-    # Helper to build group dict with preserved options
-    defaults = optimizer.defaults.copy()
-
-    def make_group(pids, weight_decay, ref_pid=None):
-        if not pids:
-            return None
-        # start from optimizer defaults, then override with some reference group's opts if available
-        grp = defaults.copy()
-        if ref_pid is not None and ref_pid in pid_to_options:
-            grp.update(pid_to_options[ref_pid])
-        grp["params"] = [ pid_to_param[pid] for pid in pids ]
-        grp["weight_decay"] = weight_decay
-        return grp
-
-    # Pick reference pids to preserve lr/betas/etc consistent with old groups
-    ref_decay = next(iter(decay_pids), None)
-    ref_nodecay = next(iter(nodecay_pids), None)
-    ref_emb = next(iter(embedding_pids), None)
-
-    new_groups = []
-    g = make_group(decay_pids, weight_decay, ref_decay)
-    if g: new_groups.append(g)
-    g = make_group(nodecay_pids, 0.0, ref_nodecay)
-    if g: new_groups.append(g)
-    g = make_group(embedding_pids, 0.0, ref_emb)
-    if g: new_groups.append(g)
-
-    optimizer.param_groups = new_groups    
-    # After reorganizing groups, we need to rebuild the optimizer state to match the new structure
-    # The fused kernels require strict dtype/device matching between params and their states
-    # Clear any state for parameters that might have mismatched tensors
-    for p in list(optimizer.state.keys()):
-        if id(p) not in pid_to_param:
-            del optimizer.state[p]
-
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) with epoch-based training
 # I/O
@@ -464,11 +390,18 @@ switch_tfm_init_scale = 1.0  # recommended 0.1 for stability (pg.10, https://arx
 router_use_full_prec = False
 use_qwen3_moe_mlp = False
 
-# adamw optimizer
-learning_rate = 6e-4 # max learning rate
+use_muon = True
+
+if use_muon:
+    learning_rate = 1e-2
+    weight_decay = 0
+else:
+    # adamw optimizer
+    learning_rate = 6e-4 # max learning rate
+    weight_decay = 1e-1
+
 lr_scale = 1.0  # scale learning rate by this factor, convenient for continual training with lower lr.
-weight_decay = 1e-1
-beta1 = 0.9
+beta1 = 0.9     # NOTE: nanochat uses a default 0.8.
 beta2 = 0.95
 grad_clip = 0.0 # clip gradients at this value, or disable if == 0.0
 
@@ -753,11 +686,17 @@ else:
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
+base_lr = learning_rate * lr_scale
 
 # optimizer(s) - model.setup_optimizers may return a single optimizer or a list
-optimizer_result = model.setup_optimizers(weight_decay, learning_rate * lr_scale, 
-                                          (beta1, beta2), device_type, 
-                                          embeddings_in_own_group=True)
+if use_muon:
+    # The nanochat optimizer setup.
+    optimizer_result = model.setup_optimizers(embedding_lr=base_lr, matrix_lr=base_lr * 0.1,
+                                              weight_decay=weight_decay, adam_betas=(beta1, beta2))
+else:
+    # The old nanoMoE optimizer setup.
+    optimizer_result = model.setup_optimizers2(base_lr, weight_decay, (beta1, beta2))
+
 if isinstance(optimizer_result, (list, tuple)):
     optimizers = list(optimizer_result)
 else:
@@ -883,9 +822,13 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
 
         # determine and set the learning rate for this iteration
         lr = get_lr(learning_rate * lr_scale, global_iter) if decay_lr else (learning_rate * lr_scale)
-        for optimizer in optimizers:
+        for i, optimizer in enumerate(optimizers):
             for param_group in optimizer.param_groups:
-                param_group['lr'] = lr
+                # The first optimizer is always adamw, 
+                if i == 0:
+                    param_group['lr'] = lr
+                else:
+                    param_group['lr'] = lr * optimizer.base_lr / optimizers[0].base_lr
 
         # evaluate the loss on train/val sets and write checkpoints
         if global_iter > 0 and global_iter % eval_every_n_iters == 0 and master_process:
@@ -1077,10 +1020,10 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 write_expert_util_stats(losses['expert_utilities'], 
                                         losses['selected_scores'],
                                         losses['router_ortho_losses_by_exp'],
-                                        losses['router_grad_self_alignments'],
-                                        losses['router_weight_exp_alignments'],
-                                        losses['router_grad_norms'],
-                                        losses['exp_gate_grad_norms'],
+                                        losses['router_grad_self_alignments'] if log_grad_stats else None,
+                                        losses['router_weight_exp_alignments'] if log_grad_stats else None,
+                                        losses['router_grad_norms'] if log_grad_stats else None,
+                                        losses['exp_gate_grad_norms'] if log_grad_stats else None,
                                         f"train-{persist_global_iter:06d}", 
                                         log_expert_util_stats_file)
 
