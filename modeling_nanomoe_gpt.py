@@ -133,7 +133,7 @@ class Router(nn.Module):
         # auxiliary / load balancing loss settings
         self.use_aux_loss           = config.use_aux_loss
         self.use_router_z_loss      = config.use_router_z_loss
-
+        self.use_positive_only_z_loss = config.use_positive_only_z_loss
         # linear projection for (noisy) softmax gating
         # no bias is used, see page 4 eq (4) in (https://arxiv.org/abs/1701.06538)
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
@@ -167,7 +167,7 @@ class Router(nn.Module):
             if self.training:
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
-                    z_loss = self.compute_router_z_loss(logits.view(B, T, -1))
+                    z_loss = self.compute_router_z_loss(logits.view(B, T, -1), positive_only=self.use_positive_only_z_loss)
                     MANAGER.add("router_z_loss", z_loss)
 
                 # Find top-k choices for each token
@@ -297,7 +297,7 @@ class Router(nn.Module):
             return mean_selected_scores
 
         
-    def compute_router_z_loss(self, logits: torch.Tensor):
+    def compute_router_z_loss(self, logits: torch.Tensor, positive_only: bool = True):
         """
         Computes ST-MoE router z loss (https://arxiv.org/abs/2202.08906)
         See equation (5) on page 7
@@ -308,6 +308,9 @@ class Router(nn.Module):
         # > z_loss = torch.exp(logits)
         # > z_loss = torch.sum(z_loss, dim=-1)
         # > z_loss = torch.log(z_loss) ** 2.0
+        if positive_only:
+            logits = torch.clamp(logits, min=0.0)
+
         z_loss = torch.logsumexp(logits, dim=-1) ** 2.0  # [B, T, n_exp]
 
         # sum over all tokens and divide by total number of tokens

@@ -21,6 +21,7 @@ wandb/
 *out1
 *out2
 *out
+out_*
 *.zst*
 draft.txt
 *.jsonl
