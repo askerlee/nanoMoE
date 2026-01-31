@@ -21,13 +21,13 @@ class GPTConfig(PretrainedConfig):
         moe_top_k: int = 2,  # renamed from top_k to avoid conflict with generation top_k
         use_aux_loss: bool = False,  # apply auxiliary loss (from Switch Transformer) in router
         use_router_z_loss: bool = False,  # apply router z loss (from ST-MoE)
-        use_penalize_mean_of_logits_z_loss: bool = True,  # apply router z loss only on positive logits
+        use_penalize_mean_of_logits_z_loss: bool = True,  # fix router z loss bug by penalizing mean of logits
         use_router_ortho_loss: bool = False,  # apply router orthogonality loss
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,
         aux_loss_weight: float = 0.01,  # default setting from Switch Transformer (see top of page 8)
-        router_z_loss_weight: float = 0.001,  # default setting from ST-MoE (see page 8 eq. 6)
+        router_z_loss_weight: float = 0.00001,  # Much smaller than the setting used in ST-MoE (see page 8 eq. 6)
         router_ortho_loss_weight: float = 0.01,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 1,  # weight for negative correlations in router-ortho loss
         router_ortho_loss_leave_one_out: bool = False,  # leave-one-out setting for router ortho loss
