@@ -21,7 +21,7 @@ class GPTConfig(PretrainedConfig):
         moe_top_k: int = 2,  # renamed from top_k to avoid conflict with generation top_k
         use_aux_loss: bool = False,  # apply auxiliary loss (from Switch Transformer) in router
         use_router_z_loss: bool = False,  # apply router z loss (from ST-MoE)
-        use_penalize_mean_of_logits_z_loss: bool = True,  # fix router z loss bug by penalizing mean of logits
+        use_logits_demeaned_z_loss: bool = True,  # fix router z loss bug by removing mean of logits
         use_router_ortho_loss: bool = False,  # apply router orthogonality loss
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
@@ -69,7 +69,7 @@ class GPTConfig(PretrainedConfig):
         self.moe_top_k = moe_top_k  # Store with moe_ prefix to avoid HF generation conflict
         self.use_aux_loss = use_aux_loss
         self.use_router_z_loss = use_router_z_loss
-        self.use_penalize_mean_of_logits_z_loss = use_penalize_mean_of_logits_z_loss
+        self.use_logits_demeaned_z_loss = use_logits_demeaned_z_loss
         self.use_router_ortho_loss = use_router_ortho_loss
         self.use_experts_ortho_loss = use_experts_ortho_loss
         self.use_gate_output_loss = use_gate_output_loss
