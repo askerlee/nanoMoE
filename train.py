@@ -479,6 +479,7 @@ if master_process:
 seed_worker(seed + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
+torch.backends.cuda.enable_flash_sdp(True)
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
 
 # note: float16 data type will automatically use a GradScaler
