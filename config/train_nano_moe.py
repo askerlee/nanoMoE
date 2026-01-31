@@ -18,7 +18,7 @@ moe_top_k = 2
 use_aux_loss = True
 aux_loss_weight = 0.01
 use_router_z_loss = True
-use_positive_only_z_loss = True
+use_penalize_mean_of_logits_z_loss = True
 # router z loss helps avoid logits explosion. 
 # But it also reduces performance slightly, so the weight is tiny.
 router_z_loss_weight = 0.00001

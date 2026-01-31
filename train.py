@@ -364,7 +364,7 @@ n_exp = 1 # if n_exp = 1 we just use regular MLP layers
 moe_top_k = 2
 use_aux_loss = False
 use_router_z_loss = False
-use_positive_only_z_loss = True
+use_penalize_mean_of_logits_z_loss = True
 use_router_ortho_loss = False
 use_experts_ortho_loss = False
 use_gate_output_loss = False
