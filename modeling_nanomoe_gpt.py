@@ -297,7 +297,8 @@ class Router(nn.Module):
             return mean_selected_scores
 
         
-    def compute_router_z_loss(self, logits: torch.Tensor, demean_logits: bool = True):
+    def compute_router_z_loss(self, logits: torch.Tensor, demean_logits: bool = True, 
+                              penalize_pos_mean_logits: bool = True):
         """
         Computes ST-MoE router z loss (https://arxiv.org/abs/2202.08906)
         See equation (5) on page 7
@@ -312,6 +313,11 @@ class Router(nn.Module):
             z_loss = torch.logsumexp(logits - logits.mean(dim=-1, keepdim=True), dim=-1) ** 2.0  # [B, T]
         else:
             z_loss = torch.logsumexp(logits, dim=-1) ** 2.0  # [B, T]
+
+        if penalize_pos_mean_logits:
+            mean_logit = logits.mean(dim=-1)  # [B, T]
+            loss_pos_mean = torch.nn.functional.softplus(mean_logit) ** 2.0  # [B, T]
+            z_loss = z_loss + loss_pos_mean
 
         # sum over all tokens and divide by total number of tokens
         return torch.mean(z_loss)
