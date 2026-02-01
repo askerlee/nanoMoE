@@ -22,6 +22,7 @@ class GPTConfig(PretrainedConfig):
         use_aux_loss: bool = False,  # apply auxiliary loss (from Switch Transformer) in router
         use_router_z_loss: bool = False,  # apply router z loss (from ST-MoE)
         use_logits_demeaned_z_loss: bool = True,  # fix router z loss bug by removing mean of logits
+        penalize_pos_mean_logits: bool = True,  # additionally penalize positive mean logits in router z loss
         use_router_ortho_loss: bool = False,  # apply router orthogonality loss
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
@@ -70,6 +71,7 @@ class GPTConfig(PretrainedConfig):
         self.use_aux_loss = use_aux_loss
         self.use_router_z_loss = use_router_z_loss
         self.use_logits_demeaned_z_loss = use_logits_demeaned_z_loss
+        self.penalize_pos_mean_logits = penalize_pos_mean_logits
         self.use_router_ortho_loss = use_router_ortho_loss
         self.use_experts_ortho_loss = use_experts_ortho_loss
         self.use_gate_output_loss = use_gate_output_loss

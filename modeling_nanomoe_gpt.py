@@ -134,6 +134,7 @@ class Router(nn.Module):
         self.use_aux_loss           = config.use_aux_loss
         self.use_router_z_loss      = config.use_router_z_loss
         self.use_logits_demeaned_z_loss = config.use_logits_demeaned_z_loss
+        self.penalize_pos_mean_logits = config.penalize_pos_mean_logits
         # linear projection for (noisy) softmax gating
         # no bias is used, see page 4 eq (4) in (https://arxiv.org/abs/1701.06538)
         self.w_g = nn.Linear(config.n_embd, config.n_exp, bias=False)
@@ -167,7 +168,9 @@ class Router(nn.Module):
             if self.training:
                 # Router Z-loss prevents logits from growing too large
                 if self.use_router_z_loss:
-                    z_loss = self.compute_router_z_loss(logits.view(B, T, -1), demean_logits=self.use_logits_demeaned_z_loss)
+                    z_loss = self.compute_router_z_loss(logits.view(B, T, -1), 
+                                                        demean_logits=self.use_logits_demeaned_z_loss,
+                                                        penalize_pos_mean_logits=self.penalize_pos_mean_logits)
                     MANAGER.add("router_z_loss", z_loss)
 
                 # Find top-k choices for each token

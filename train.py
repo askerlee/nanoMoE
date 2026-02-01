@@ -365,6 +365,7 @@ moe_top_k = 2
 use_aux_loss = False
 use_router_z_loss = False
 use_logits_demeaned_z_loss = True
+penalize_pos_mean_logits = True
 use_router_ortho_loss = False
 use_experts_ortho_loss = False
 use_gate_output_loss = False
@@ -602,6 +603,8 @@ start_batch_idx = 0
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   bias=bias, vocab_size=None, n_exp=n_exp, moe_top_k=moe_top_k,
                   use_aux_loss=use_aux_loss, use_router_z_loss=use_router_z_loss,
+                  use_logits_demeaned_z_loss=use_logits_demeaned_z_loss,
+                  penalize_pos_mean_logits=penalize_pos_mean_logits,
                   use_router_ortho_loss=use_router_ortho_loss,
                   use_experts_ortho_loss=use_experts_ortho_loss,
                   use_gate_output_loss=use_gate_output_loss,
