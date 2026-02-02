@@ -320,7 +320,9 @@ class Router(nn.Module):
 
         if penalize_pos_mean_logits:
             mean_logit = logits.mean(dim=-1)  # [B, T]
-            loss_pos_mean = torch.nn.functional.softplus(mean_logit) ** 2.0  # [B, T]
+            #loss_pos_mean = torch.nn.functional.softplus(mean_logit) ** 2.0  # [B, T]
+            # Penalize both positive and negative mean logits.
+            loss_pos_mean = mean_logit ** 2.0 # [B, T]
             z_loss = z_loss + loss_pos_mean
 
         # sum over all tokens and divide by total number of tokens
