@@ -1317,7 +1317,8 @@ class GPT(PreTrainedModel, GenerationMixin):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = ids if ids.size(1) <= self.config.block_size else ids[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits = self.forward(idx_cond)
+            output = self.forward(idx_cond)
+            logits = output.logits # (B, t, vocab_size)
             logits = logits[:, -1, :] # (B, vocab_size)
             if top_k is not None:
                 v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
