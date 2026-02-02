@@ -726,7 +726,13 @@ class GPT(PreTrainedModel, GenerationMixin):
         # init all weights
         # optionall use switch transformer special init scheme for experts
         # See pg. 10 here: https://arxiv.org/abs/2101.03961
-        self.apply(self._init_weights)
+        # use_old_init: for ablation studies on models trained with the old init scheme.
+        use_old_init = False
+        if use_old_init:
+            self.apply(self._init_weights_old)
+        else:
+            self.apply(self._init_weights)
+
         # apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
             if pn.endswith('c_proj.weight') or pn.endswith('experts.c_proj'):
@@ -801,7 +807,83 @@ class GPT(PreTrainedModel, GenerationMixin):
                 # Non-expert parameters are always active
                 n_params += param.numel()
         return n_params
-    
+
+
+    @torch.no_grad()
+    def _init_weights_old(self, module):
+        # optionally use switch transformer-style initialization
+        # see page 10 for switch init explanation: https://arxiv.org/abs/2101.03961
+        if isinstance(module, nn.Linear):
+            if self.config.use_switch_tfm_init:
+                scale = self.config.switch_tfm_init_scale
+
+                # linear layers have flipped dimensions in torch
+                # size of weights is [out_dim, in_dim] 
+                w_fan_in = module.weight.shape[-1]
+                w_std = (scale / w_fan_in) ** 0.5
+                torch.nn.init.trunc_normal_(
+                    module.weight,
+                    mean=0.0,
+                    std=w_std,
+                    a=-2*w_std,
+                    b=2*w_std,
+                )
+            else:
+                # perform standard (normal) initialization of weights
+                torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+            # always initialize bias to zero
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, MLPExperts) or isinstance(module, Qwen3MLPExperts):
+            # we have to init expert weights manually because
+            # nn.Parameter is not a type of module in torch
+            if self.config.use_switch_tfm_init:
+                scale = self.config.switch_tfm_init_scale
+
+                c_fc_fan_in = module.c_fc.shape[-2]
+                c_fc_std = (scale / c_fc_fan_in) ** 0.5
+                torch.nn.init.trunc_normal_(
+                    module.c_fc,
+                    mean=0.0,
+                    std=c_fc_std,
+                    a=-2*c_fc_std,
+                    b=2*c_fc_std,
+                )
+                if isinstance(module, Qwen3MLPExperts):
+                    # also init gate_proj the same way as c_fc, as their shapes are the same
+                    torch.nn.init.trunc_normal_(
+                        module.gate_proj,
+                        mean=0.0,
+                        std=c_fc_std,
+                        a=-2*c_fc_std,
+                        b=2*c_fc_std,
+                    )
+
+                c_proj_fan_in = module.c_proj.shape[-2]
+                c_proj_std = (scale / c_proj_fan_in) ** 0.5
+                torch.nn.init.trunc_normal_(
+                    module.c_proj,
+                    mean=0.0,
+                    std=c_proj_std,
+                    a=-2*c_proj_std,
+                    b=2*c_proj_std,
+                )
+            else:
+                # perform standard (normal) initialization of weights
+                torch.nn.init.normal_(module.c_fc, mean=0.0, std=0.02)
+                torch.nn.init.normal_(module.c_proj, mean=0.0, std=0.02)
+                if isinstance(module, Qwen3MLPExperts):
+                    torch.nn.init.normal_(module.gate_proj, mean=0.0, std=0.02)
+
+            # bias is always initialized to zero
+            if module.fc_bias is not None:
+                torch.nn.init.zeros_(module.fc_bias)
+                torch.nn.init.zeros_(module.proj_bias)
+        elif isinstance(module, nn.Embedding):
+            # just use standard initialization scheme for embedding always
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
     @torch.no_grad()
     def _init_weights(self, module):
         # Legacy-style init for attention/MLP blocks (from init_weights_old)
