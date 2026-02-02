@@ -1173,8 +1173,8 @@ class GPT(PreTrainedModel, GenerationMixin):
                 losses['gate_output_loss'] = gate_output_loss.detach() if isinstance(gate_output_loss, torch.Tensor) else gate_output_loss
                 MANAGER.reset("gate_output_loss")
         else:
-            # inference: just return the logits directly
-            return logits
+            # No labels provided - inference mode
+            loss = None
 
         if False and self.global_iter >= 1000:
             # To debug router z loss, we need the properly weighted, un-detached loss to do manual backward.
