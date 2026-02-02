@@ -90,6 +90,7 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = config.n_embd // config.n_head
         
         self.n_head = config.n_head
+        self.n_kv_head = config.n_head
         self.n_embd = config.n_embd
     
     def forward(self, x):
@@ -712,6 +713,8 @@ class GPT(PreTrainedModel, GenerationMixin):
             ln_f = nn.RMSNorm(config.n_embd, eps=1e-6, elementwise_affine=True),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        # NOTE: Nanochat doesn't tie wte and lm_head weights. To be consistent with nanoMoE, 
+        # we do tie them here.
         # with weight tying when using torch.compile() some warnings get generated:
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
@@ -740,6 +743,9 @@ class GPT(PreTrainedModel, GenerationMixin):
         self.num_hidden_layers   = config.n_layer
         self.num_attention_heads = config.n_head
         self.hidden_size         = config.n_embd
+    
+    def get_device(self):
+        return self.transformer.wte.weight.device
 
     def get_input_embeddings(self):
         return self.transformer.wte
@@ -796,6 +802,30 @@ class GPT(PreTrainedModel, GenerationMixin):
     
     @torch.no_grad()
     def _init_weights(self, module):
+        # Legacy-style init for attention/MLP blocks (from init_weights_old)
+        if isinstance(module, CausalSelfAttention):
+            n_embd = self.config.n_embd
+            s = 3**0.5 * n_embd**-0.5
+            # Since nanochat originally uses separate linear layers for q, k, v, 
+            # and nanoMoE uses fused QKV, we initialize c_attn just in the same way as
+            # initializing c_q, c_k, c_v separately.
+            torch.nn.init.uniform_(module.c_attn.weight, -s, s)
+            torch.nn.init.zeros_(module.c_proj.weight)
+            if module.c_attn.bias is not None:
+                torch.nn.init.zeros_(module.c_attn.bias)
+            if module.c_proj.bias is not None:
+                torch.nn.init.zeros_(module.c_proj.bias)
+            # prevent double init of submodules
+            module.c_attn._skip_init = True
+            module.c_proj._skip_init = True
+            return
+        
+        # optionally use switch transformer-style initialization
+        # see page 10 for switch init explanation: https://arxiv.org/abs/2101.03961
+        if isinstance(module, nn.Linear):
+            if getattr(module, "_skip_init", False):
+                return
+                    
         # optionally use switch transformer-style initialization
         # see page 10 for switch init explanation: https://arxiv.org/abs/2101.03961
         if isinstance(module, nn.Linear):
@@ -866,8 +896,101 @@ class GPT(PreTrainedModel, GenerationMixin):
                 torch.nn.init.zeros_(module.fc_bias)
                 torch.nn.init.zeros_(module.proj_bias)
         elif isinstance(module, nn.Embedding):
-            # just use standard initialization scheme for embedding always
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module is self.transformer.wte:
+                # nanochat uses std=1.0 for token embeddings.
+                torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
+            else:
+                # wpe (positional embedding).
+                # just use standard initialization scheme for embedding always
+                torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def estimate_flops(self):
+        """
+        Return the estimated FLOPs per token for the model (forward + backward).
+        Each matmul weight parameter contributes 2 FLOPs (multiply *, accumulate +) in forward, and 2X that in backward => 2+4=6.
+        Cleanest explanation of this: https://medium.com/@dzmitrybahdanau/the-flops-calculus-of-language-model-training-3b19c1f025e4
+        On top of that, 12 * h * q * effective_seq_len accounts for key @ query matmul flops inside attention.
+        With sliding windows, effective_seq_len varies per layer (capped by window size).
+        Ref: https://arxiv.org/abs/2204.02311 (PaLM paper).
+        This is ~1% off from the exact formulas of Chinchilla paper, the difference is:
+        - Chinchilla counts the embedding layer as flops (? weird, it's just a lookup => we ignore)
+        - Chinchilla counts exp/sum/divide in attention softmax as flops (a little sus and very tiny => we ignore)
+        """
+        nparams = sum(p.numel() for p in self.parameters())
+        # Exclude non-matmul params: embeddings
+        nparams_exclude = self.transformer.wte.weight.numel()
+        h, q, t = self.config.n_head, self.config.n_embd // self.config.n_head, self.config.sequence_len
+        # Sum attention FLOPs per layer, accounting for sliding window
+        attn_flops = 0
+        for layer_idx in range(len(self.transformer.h)):
+            effective_seq = t
+            attn_flops += 12 * h * q * effective_seq
+        num_flops_per_token = 6 * (nparams - nparams_exclude) + attn_flops
+        return num_flops_per_token
+
+    def num_scaling_params(self):
+        """
+        Return all of the parameters, same as Chinchilla paper.
+        Kaplan et al. did not include embedding parameters and said that this led to cleaner scaling laws.
+        But Kaplan et al. also had a bug in their results (as pointed out by Chinchilla).
+        My own experiments in nanochat confirm the Chinchilla approach gives the much cleaner scaling law.
+        Ref: https://arxiv.org/abs/2203.15556 (Chinchilla paper <- good).
+        Ref: https://arxiv.org/abs/2001.08361 (Kaplan et al. original scaling laws paper <- bad)
+        """
+        nparams = sum(p.numel() for p in self.parameters())
+        return nparams
+    
+    # Revised from the nanochat setup_optimizers() with a little customization.
+    def setup_optimizers(self, unembedding_lr=0.004, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.8, 0.95)):
+        ddp = get_dist_info()[0]
+
+        # Separate out all parameters into 3 groups (matrix, embeddings, other 1D params, e.g. RMSNorm)
+        matrix_params = []
+        onedim_params = []
+        embedding_params = []
+        handled_params = set()
+        # lm_head weight is tied to wte weight, so include it in embedding params
+        embedding_suffixes = ('wte.weight', 'wpe.weight', 'lm_head.weight')
+
+        for name, param in self.named_parameters():
+            if not param.requires_grad:
+                continue
+            pid = id(param)
+            if pid in handled_params:
+                continue
+            handled_params.add(pid)
+
+            is_bias = name.endswith('bias')
+            is_embedding_weight = name.endswith(embedding_suffixes)
+
+            if is_embedding_weight:
+                embedding_params.append(param)
+            elif param.dim() >= 2 and not is_bias:
+                matrix_params.append(param)
+            else:
+                onedim_params.append(param)
+
+        # Create the AdamW optimizer for the embedding and 1d params
+        adam_groups = [
+            dict(params=embedding_params, lr=embedding_lr),
+            dict(params=onedim_params, lr=embedding_lr),
+        ]
+        adamw_kwargs = dict(betas=adam_betas, eps=1e-10, weight_decay=0.0) # NOTE: weight decay is hardcoded to 0.0 for AdamW, only used in Muon
+        AdamWFactory = DistAdamW if ddp else partial(torch.optim.AdamW, fused=True)
+        adamw_optimizer = AdamWFactory(adam_groups, **adamw_kwargs)
+        # Create the Muon optimizer for the linear layers
+        muon_kwargs = dict(lr=matrix_lr, momentum=0.95, weight_decay=weight_decay)
+        MuonFactory = DistMuon if ddp else Muon
+        muon_optimizer = MuonFactory(matrix_params, **muon_kwargs)
+        # Combine them the two optimizers into one list
+        optimizers = [adamw_optimizer, muon_optimizer]
+        # Used as references for LR schedulers in train.py.
+        adamw_optimizer.base_lr = embedding_lr
+        muon_optimizer.base_lr  = matrix_lr
+        for opt in optimizers:
+            for group in opt.param_groups:
+                group["initial_lr"] = group["lr"]
+        return optimizers
 
     def forward(
         self,
@@ -899,7 +1022,7 @@ class GPT(PreTrainedModel, GenerationMixin):
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
-        router_ortho_loss = 0
+        
         losses = { 'ntp_loss': 0,
                    'aux_loss': 0,
                    'router_z_loss': 0,
@@ -915,6 +1038,20 @@ class GPT(PreTrainedModel, GenerationMixin):
 
         # Always compute logits for all positions (HuggingFace standard)
         logits = self.lm_head(x)
+
+        # If MANAGER.collect_load_balancing_stats is False, these will return None
+        expert_utilities = MANAGER.aggregate("expert_utilities")
+        losses['expert_utilities'] = expert_utilities.detach() if expert_utilities is not None else None
+        MANAGER.reset("expert_utilities")
+        router_ortho_losses_by_exp = MANAGER.aggregate("router_ortho_losses_by_exp")
+        losses['router_ortho_losses_by_exp'] = router_ortho_losses_by_exp.detach() if router_ortho_losses_by_exp is not None else None
+        MANAGER.reset("router_ortho_losses_by_exp")
+        drop_rate_per_ks = MANAGER.aggregate("drop_rate_per_ks")
+        losses['drop_rate_per_ks'] = drop_rate_per_ks.detach() if drop_rate_per_ks is not None else None
+        MANAGER.reset("drop_rate_per_ks")
+        selected_scores = MANAGER.aggregate("selected_scores")
+        losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
+        MANAGER.reset("selected_scores")
         
         if labels is not None:
             # Compute loss when labels are provided
@@ -952,22 +1089,8 @@ class GPT(PreTrainedModel, GenerationMixin):
                 losses['gate_output_loss'] = gate_output_loss.detach() if isinstance(gate_output_loss, torch.Tensor) else gate_output_loss
                 MANAGER.reset("gate_output_loss")
         else:
-            # No labels provided - inference mode
-            loss = None
-
-        # If MANAGER.collect_load_balancing_stats is False, these will return None
-        expert_utilities = MANAGER.aggregate("expert_utilities")
-        losses['expert_utilities'] = expert_utilities.detach() if expert_utilities is not None else None
-        MANAGER.reset("expert_utilities")
-        router_ortho_losses_by_exp = MANAGER.aggregate("router_ortho_losses_by_exp")
-        losses['router_ortho_losses_by_exp'] = router_ortho_losses_by_exp.detach() if router_ortho_losses_by_exp is not None else None
-        MANAGER.reset("router_ortho_losses_by_exp")
-        drop_rate_per_ks = MANAGER.aggregate("drop_rate_per_ks")
-        losses['drop_rate_per_ks'] = drop_rate_per_ks.detach() if drop_rate_per_ks is not None else None
-        MANAGER.reset("drop_rate_per_ks")
-        selected_scores = MANAGER.aggregate("selected_scores")
-        losses['selected_scores'] = selected_scores.detach() if selected_scores is not None else None
-        MANAGER.reset("selected_scores")
+            # inference: just return the logits directly
+            return logits
 
         if False and self.global_iter >= 1000:
             # To debug router z loss, we need the properly weighted, un-detached loss to do manual backward.
@@ -1089,119 +1212,45 @@ class GPT(PreTrainedModel, GenerationMixin):
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
 
-    def setup_optimizers2(self, learning_rate, weight_decay, betas):
-        decay_params = []
-        nodecay_params = []
-        embedding_params = []
-        handled_params = set()
-        # lm_head weight is tied to wte weight, so include it in embedding params
-        embedding_suffixes = ('wte.weight', 'wpe.weight', 'lm_head.weight')
 
-        for name, param in self.named_parameters():
-            if not param.requires_grad:
-                continue
-            pid = id(param)
-            if pid in handled_params:
-                continue
-            handled_params.add(pid)
-
-            is_bias = name.endswith('bias')
-            is_embedding_weight = name.endswith(embedding_suffixes)
-
-            if is_embedding_weight:
-                embedding_params.append(param)
-            elif param.dim() >= 2 and not is_bias:
-                decay_params.append(param)
+    # nanochat's generate() is almost identical to nanoMoE's generate(). We only keep nanoMoE's version here.
+    @torch.inference_mode()
+    def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):
+        """
+        Naive autoregressive streaming inference.
+        To make it super simple, let's assume:
+        - batch size is 1
+        - ids and the yielded tokens are simple Python lists and ints
+        """
+        assert isinstance(tokens, list)
+        device = self.get_device()
+        rng = None
+        if temperature > 0:
+            rng = torch.Generator(device=device)
+            rng.manual_seed(seed)
+        ids = torch.tensor([tokens], dtype=torch.long, device=device) # add batch dim
+        for _ in range(max_tokens):
+            # if the sequence context is growing too long we must crop it at block_size
+            idx_cond = ids if ids.size(1) <= self.config.block_size else ids[:, -self.config.block_size:]
+            # forward the model to get the logits for the index in the sequence
+            logits = self.forward(idx_cond)
+            logits = logits[:, -1, :] # (B, vocab_size)
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('Inf')
+            if temperature > 0:
+                logits = logits / temperature
+                probs = F.softmax(logits, dim=-1)
+                next_ids = torch.multinomial(probs, num_samples=1, generator=rng)
             else:
-                nodecay_params.append(param)
+                next_ids = torch.argmax(logits, dim=-1, keepdim=True)
+            ids = torch.cat((ids, next_ids), dim=1)
+            token = next_ids.item()
+            yield token
 
-        optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0},
-            {'params': embedding_params, 'weight_decay': 0.0}
-        ]
-
-        num_decay_params = sum(p.numel() for p in decay_params)
-        num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
-        num_embedding_params = sum(p.numel() for p in embedding_params)
-        print(f"num embedding parameter tensors: {len(embedding_params)}, with {num_embedding_params:,} parameters")
-
-        # Create AdamW optimizer and use the fused version if it is available
-        fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-        use_fused = fused_available
-        if use_fused:
-            dtype_device_pairs = {
-                (param.dtype, str(param.device))
-                for group in optim_groups
-                for param in group['params']
-            }
-            if len(dtype_device_pairs) > 1:
-                combos = ', '.join(
-                    f"{dtype} @ {device}" for dtype, device in sorted(
-                        dtype_device_pairs, key=lambda x: (x[1], str(x[0]))
-                    )
-                )
-                print(f"Disabling fused AdamW due to mixed parameter dtypes/devices: {combos}")
-                use_fused = False
-        extra_args = dict(fused=True) if use_fused else dict()
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
-        print(f"Using fused AdamW: {use_fused}")
-
-        return optimizer
-
-    # Revised from the nanochat setup_optimizers() with a little customization.
-    def setup_optimizers(self, embedding_lr=0.2, matrix_lr=0.02, weight_decay=0.0, adam_betas=(0.8, 0.95)):
-        ddp = get_dist_info()[0]
-
-        # Separate out all parameters into 3 groups (matrix, embeddings, other 1D params, e.g. RMSNorm)
-        matrix_params = []
-        onedim_params = []
-        embedding_params = []
-        handled_params = set()
-        # lm_head weight is tied to wte weight, so include it in embedding params
-        embedding_suffixes = ('wte.weight', 'wpe.weight', 'lm_head.weight')
-
-        for name, param in self.named_parameters():
-            if not param.requires_grad:
-                continue
-            pid = id(param)
-            if pid in handled_params:
-                continue
-            handled_params.add(pid)
-
-            is_bias = name.endswith('bias')
-            is_embedding_weight = name.endswith(embedding_suffixes)
-
-            if is_embedding_weight:
-                embedding_params.append(param)
-            elif param.dim() >= 2 and not is_bias:
-                matrix_params.append(param)
-            else:
-                onedim_params.append(param)
-
-        # Create the AdamW optimizer for the embedding and 1d params
-        adam_groups = [
-            dict(params=embedding_params, lr=embedding_lr),
-            dict(params=onedim_params, lr=embedding_lr),
-        ]
-        adamw_kwargs = dict(betas=adam_betas, eps=1e-10, weight_decay=0.0) # NOTE: weight decay is hardcoded to 0.0 for AdamW, only used in Muon
-        AdamWFactory = DistAdamW if ddp else partial(torch.optim.AdamW, fused=True)
-        adamw_optimizer = AdamWFactory(adam_groups, **adamw_kwargs)
-        # Create the Muon optimizer for the linear layers
-        muon_kwargs = dict(lr=matrix_lr, momentum=0.95, weight_decay=weight_decay)
-        MuonFactory = DistMuon if ddp else Muon
-        muon_optimizer = MuonFactory(matrix_params, **muon_kwargs)
-        # Combine them the two optimizers into one list
-        optimizers = [adamw_optimizer, muon_optimizer]
-        # Used as references for LR schedulers in train.py.
-        adamw_optimizer.base_lr = embedding_lr
-        muon_optimizer.base_lr  = matrix_lr
-        for opt in optimizers:
-            for group in opt.param_groups:
-                group["initial_lr"] = group["lr"]
-        return optimizers
+    def prepare_inputs_for_generation(self, input_ids, **kwargs):
+        """Prepare inputs for generation."""
+        return {"input_ids": input_ids}
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
         """ estimate model flops utilization (MFU) in units of GPU bfloat16 -> fp32 accum peak FLOPS """
@@ -1244,39 +1293,6 @@ class GPT(PreTrainedModel, GenerationMixin):
         except:
             breakpoint()
         return mfu
-
-    def prepare_inputs_for_generation(self, input_ids, **kwargs):
-        """Prepare inputs for generation."""
-        return {"input_ids": input_ids}
-    
-    @torch.no_grad()
-    def generate_legacy(self, idx, max_new_tokens, temperature=1.0, top_k=None):
-        """
-        Legacy generation method for backward compatibility.
-        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
-        the sequence max_new_tokens times, feeding the predictions back into the model each time.
-        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
-        """
-        for _ in range(max_new_tokens):
-            # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
-            # forward the model to get the logits for the index in the sequence
-            output = self(idx_cond, return_dict=True)
-            logits = output.logits
-            # pluck the logits at the final step and scale by desired temperature
-            logits = logits[:, -1, :] / temperature
-            # optionally crop the logits to only the top k options
-            if top_k is not None:
-                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                logits[logits < v[:, [-1]]] = -float('Inf')
-            # apply softmax to convert logits to (normalized) probabilities
-            probs = F.softmax(logits, dim=-1)
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1)
-            # append sampled index to the running sequence and continue
-            idx = torch.cat((idx, idx_next), dim=1)
-
-        return idx
 
 
 # Register the model with HuggingFace AutoModel
