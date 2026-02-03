@@ -338,7 +338,7 @@ seed = 1337
 # wandb logging
 wandb_log = True # False # disabled by default
 wandb_project = 'nano-moe'
-wandb_run_name = 'gpt2-124M-owt' + str(time.time())
+
 # Whether to save expert utilization stats from beginning to this iteration.
 # Set to -1 to disable.
 log_expert_util_stats_until_training_iter = -1
@@ -446,6 +446,9 @@ config_keys = [k for k in config_keys if k not in ['max_iters', 'lr_decay_iters'
 # Put everything in argv[1:] into globals(). If an argument is a config file, exec it,
 # otherwise if it's a --key=value argument, override the corresponding key in globals().
 exec(open('configurator.py').read()) # overrides from command line or config file
+
+wandb_run_name = ckpt_prefix + time.strftime('%Y-%m-%d %H:%M:%S')
+
 config = {k: globals()[k] for k in config_keys}  # will be useful for logging
 print(config)
 # -----------------------------------------------------------------------------

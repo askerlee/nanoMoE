@@ -7,7 +7,6 @@ import time
 wandb_log = True
 init_from = 'scratch'
 wandb_project = 'nano-moe'
-wandb_run_name ='tinystories-moe' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 # model/moe settings
 stride = 100 #disable moe

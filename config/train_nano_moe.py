@@ -9,7 +9,6 @@ seed = 1337
 wandb_log = True
 init_from = 'scratch'
 wandb_project = 'nano-moe'
-wandb_run_name ='gpt2-124M-moe-owt ' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 # model/moe settings
 n_exp = 128
