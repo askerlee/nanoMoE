@@ -473,7 +473,6 @@ class MOELayer(nn.Module):
         self.top_k = config.moe_top_k
         self.use_router_ortho_loss = config.use_router_ortho_loss
         self.router_ortho_neg_corr_weight = config.router_ortho_neg_corr_weight
-        self.router_ortho_loss_leave_one_out = config.router_ortho_loss_leave_one_out
         # use_experts_ortho_loss: If set to True, compute experts ortho loss for ablation study.
         # But the computation is slow, so disabled by default.
         # We just don't optimize it unless the weight is set > 0 in the config.
@@ -580,12 +579,7 @@ class MOELayer(nn.Module):
             # Scale down gradients to expert gate projection weights by 0.2  
             # allows adjusting expert weights slightly, without hurting representation learning too much.
             # gate_proj_weights: [n_exp, n_embd, intermediate_size]
-            if self.router_ortho_loss_leave_one_out:
-                # Leave-one-out: remove one projection from each expert from the loss 
-                # to allow it to be aligned with router weight.
-                gate_proj_weights = self.grad_scaler(self.experts.gate_proj[:, :, 1:])
-            else:
-                gate_proj_weights = self.grad_scaler(self.experts.gate_proj)  
+            gate_proj_weights = self.grad_scaler(self.experts.gate_proj)  
 
             # ortho_losses: [n_exp, intermediate_size]
             ortho_losses_signed = (router_weights * gate_proj_weights).sum(dim=1)

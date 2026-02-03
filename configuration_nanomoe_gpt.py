@@ -31,7 +31,6 @@ class GPTConfig(PretrainedConfig):
         router_z_loss_weight: float = 0.00001,  # Much smaller than the setting used in ST-MoE (see page 8 eq. 6)
         router_ortho_loss_weight: float = 0.01,  # default weight for orthogonality loss
         router_ortho_neg_corr_weight: float = 1,  # weight for negative correlations in router-ortho loss
-        router_ortho_loss_leave_one_out: bool = False,  # leave-one-out setting for router ortho loss
         # experts_ortho_loss is very small due to squared cosine similarities.
         # So its weight is set higher to have a meaningful effect.
         experts_ortho_loss_weight: float = 0.01,
@@ -80,7 +79,6 @@ class GPTConfig(PretrainedConfig):
         self.router_z_loss_weight = router_z_loss_weight
         self.router_ortho_loss_weight = router_ortho_loss_weight
         self.router_ortho_neg_corr_weight = router_ortho_neg_corr_weight
-        self.router_ortho_loss_leave_one_out = router_ortho_loss_leave_one_out
         self.experts_ortho_loss_weight = experts_ortho_loss_weight
         self.gate_output_loss_weight = gate_output_loss_weight
         self.projs_diversity_loss_weight = projs_diversity_loss_weight

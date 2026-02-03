@@ -374,7 +374,6 @@ aux_loss_weight = 0.001
 router_z_loss_weight = 0.00001
 router_ortho_loss_weight = 0.01
 router_ortho_neg_corr_weight = 1  # weight for negative correlations in router-ortho loss
-router_ortho_loss_leave_one_out = False  # whether to leave one out when computing router ortho loss
 # experts_ortho_loss is very small due to squared cosine similarities.
 # So its weight is set higher to have a meaningful effect.
 experts_ortho_loss_weight = 0.01  
@@ -612,7 +611,6 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
                   router_z_loss_weight=router_z_loss_weight, 
                   router_ortho_loss_weight=router_ortho_loss_weight,
                   router_ortho_neg_corr_weight=router_ortho_neg_corr_weight,
-                  router_ortho_loss_leave_one_out=router_ortho_loss_leave_one_out,
                   experts_ortho_loss_weight=experts_ortho_loss_weight,
                   gate_output_loss_weight=gate_output_loss_weight,
                   projs_diversity_loss_weight=projs_diversity_loss_weight,
