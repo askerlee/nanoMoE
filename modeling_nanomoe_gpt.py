@@ -61,12 +61,15 @@ class GradientScaler(nn.Module):
         """
         super().__init__(*args, **kwargs)
 
-        self._alpha = torch.tensor(alpha, requires_grad=False)
-        self._debug = torch.tensor(debug, requires_grad=False)
+        # Store as Python scalars to avoid meta tensor buffers during lazy/meta init.
+        self._alpha = float(alpha)
+        self._debug = bool(debug)
 
     def forward(self, input_):
         _debug = self._debug if hasattr(self, '_debug') else False
-        return ScaleGrad.apply(input_, self._alpha.to(input_.device), _debug)
+        alpha_t = torch.as_tensor(self._alpha, device=input_.device, dtype=input_.dtype)
+        debug_t = torch.as_tensor(_debug, device=input_.device)
+        return ScaleGrad.apply(input_, alpha_t, debug_t)
 
 def gen_gradient_scaler(alpha, debug=False):
     if alpha == 1:
@@ -381,6 +384,7 @@ class MLPExperts(nn.Module):
         self.proj_bias = nn.Parameter(torch.empty(config.n_exp, 1, config.n_embd)) if self.bias else None
         # Use ReLU-squared activation
         self.act = ReLUSquared()
+        self.gate_output_loss = 0
     
     def forward(self, x):
         x = torch.bmm(x, self.c_fc)

@@ -17,7 +17,7 @@ class GPTConfig(PretrainedConfig):
         n_embd: int = 768,
         bias: bool = True,  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
         # MoE-related configs
-        n_exp: int = 1,  # if n_exp = 1 we just use regular MLP layers
+        n_exp: int = 32,  # if n_exp = 1 we just use regular MLP layers
         moe_top_k: int = 2,  # renamed from top_k to avoid conflict with generation top_k
         use_aux_loss: bool = False,  # apply auxiliary loss (from Switch Transformer) in router
         use_router_z_loss: bool = False,  # apply router z loss (from ST-MoE)
@@ -41,11 +41,11 @@ class GPTConfig(PretrainedConfig):
         eval_capacity: float = 3.0,     # 3.0 leads slightly better performance than 2.0 on CORE.
         min_capacity: int = 4,  # minimum batch size to send to any single expert
         stride: int = 1,  # one in every stride layers are converted to an MoE
-        moe_start_layer: int = 0,  # layer index to start using MoE layers, if n_exp > 1
+        moe_start_layer: int = 2,  # layer index to start using MoE layers, if n_exp > 1
         use_switch_tfm_init: bool = False,  # use weight init scheme from Switch Transformer
         switch_tfm_init_scale: float = 1.0,
         router_use_full_prec: bool = False,  # use float32 precision in the router
-        use_qwen3_moe_mlp: bool = False,  # use Qwen3-style MoE MLPs
+        use_qwen3_moe_mlp: bool = True,  # use Qwen3-style MoE MLPs
         **kwargs,
     ):
         # Set auto_map for trust_remote_code loading before calling super().__init__
