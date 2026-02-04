@@ -36,6 +36,7 @@ from manager import MANAGER
 from data.tinystories.dataloader import ChunkDataset, BoundaryChunkDataset
 import numpy as np
 import random
+import re
 
 def seed_worker(worker_seed):
     torch.backends.cudnn.benchmark = False
@@ -447,7 +448,13 @@ config_keys = [k for k in config_keys if k not in ['max_iters', 'lr_decay_iters'
 # otherwise if it's a --key=value argument, override the corresponding key in globals().
 exec(open('configurator.py').read()) # overrides from command line or config file
 
-wandb_run_name = ckpt_prefix + time.strftime('%Y-%m-%d %H:%M:%S')
+ckpt_prefix2 = ckpt_prefix
+if resume_from:
+    mat = re.search(r"(\d+)$", resume_from.rstrip('/'))
+    if mat:
+        ckpt_prefix2 += f"-resume{mat.group(1)}"
+
+wandb_run_name = ckpt_prefix2 + '-' + time.strftime('%Y-%m-%d %H:%M:%S')
 
 config = {k: globals()[k] for k in config_keys}  # will be useful for logging
 print(config)

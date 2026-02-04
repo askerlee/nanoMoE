@@ -1294,7 +1294,6 @@ class GPT(PreTrainedModel, GenerationMixin):
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
 
-
     # nanochat's generate() is almost identical to nanoMoE's generate(). We only keep nanoMoE's version here.
     @torch.inference_mode()
     def generate(self, tokens, max_tokens, temperature=1.0, top_k=None, seed=42):
