@@ -12,18 +12,18 @@ class GPTConfig(PretrainedConfig):
         self,
         block_size: int = 1024,
         vocab_size: int = 50304,  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
-        n_layer: int = 12,
+        n_layer: int = 10,
         n_head: int = 12,
         n_embd: int = 768,
         bias: bool = True,  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
         # MoE-related configs
         n_exp: int = 32,  # if n_exp = 1 we just use regular MLP layers
         moe_top_k: int = 2,  # renamed from top_k to avoid conflict with generation top_k
-        use_aux_loss: bool = False,  # apply auxiliary loss (from Switch Transformer) in router
-        use_router_z_loss: bool = False,  # apply router z loss (from ST-MoE)
+        use_aux_loss: bool = True,  # apply auxiliary loss (from Switch Transformer) in router
+        use_router_z_loss: bool = True,  # apply router z loss (from ST-MoE)
         use_logits_demeaned_z_loss: bool = True,  # fix router z loss bug by removing mean of logits
         penalize_pos_mean_logits: bool = True,  # additionally penalize positive mean logits in router z loss
-        use_router_ortho_loss: bool = False,  # apply router orthogonality loss
+        use_router_ortho_loss: bool = True,  # apply router orthogonality loss
         use_experts_ortho_loss: bool = False,  # Compute experts orthogonality loss for ablation study
         use_gate_output_loss: bool = True,  # Always compute gate output regularization loss for ablation study
         use_noisy_top_k: bool = False,

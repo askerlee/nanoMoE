@@ -652,6 +652,9 @@ if resume_from:
             map_location='cpu',
             weights_only=False,
         )
+        # Replace model_config with the one from checkpoint to ensure consistency.
+        model_args = training_state.get("model_args", model.config.to_dict())
+
         global_iter = training_state['global_iter']
         persist_global_iter = training_state.get('persist_global_iter', global_iter)
         eval_count = training_state['eval_count']
