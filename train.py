@@ -358,7 +358,6 @@ block_size = 1024   # Training tokens per sample
 n_layer = 12
 n_head = 12
 n_embd = 768
-bias = False # do we use bias inside LayerNorm and Linear layers?
 
 # moe
 n_exp = 1 # if n_exp = 1 we just use regular MLP layers
@@ -610,7 +609,7 @@ start_batch_idx = 0
 
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  bias=bias, vocab_size=None, n_exp=n_exp, moe_top_k=moe_top_k,
+                  vocab_size=None, n_exp=n_exp, moe_top_k=moe_top_k,
                   use_aux_loss=use_aux_loss, use_router_z_loss=use_router_z_loss,
                   use_logits_demeaned_z_loss=use_logits_demeaned_z_loss,
                   penalize_pos_mean_logits=penalize_pos_mean_logits,

@@ -15,7 +15,6 @@ class GPTConfig(PretrainedConfig):
         n_layer: int = 10,
         n_head: int = 12,
         n_embd: int = 768,
-        bias: bool = True,  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
         # MoE-related configs
         n_exp: int = 32,  # if n_exp = 1 we just use regular MLP layers
         moe_top_k: int = 2,  # renamed from top_k to avoid conflict with generation top_k
@@ -64,7 +63,6 @@ class GPTConfig(PretrainedConfig):
         self.num_hidden_layers = n_layer    # For compatibility with lm-eval
         self.num_attention_heads = n_head   # For compatibility with lm-eval
         self.hidden_size = n_embd           # For compatibility with lm-eval
-        self.bias = bias
         self.n_exp = n_exp
         self.moe_top_k = moe_top_k  # Store with moe_ prefix to avoid HF generation conflict
         self.use_aux_loss = use_aux_loss
