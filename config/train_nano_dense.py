@@ -19,7 +19,7 @@ n_embd = 512
 # these make the total batch size be ~0.5M
 # 12 batch size * 1024 block size * 5 gradaccum * 8 GPUs = 491,520
 batch_size = 128
-block_size = 512
+sequence_len = 512
 gradient_accumulation_steps = 1
 
 # epoch-based training

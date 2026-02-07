@@ -110,19 +110,19 @@ class ChunkDataset(torch.utils.data.Dataset):
     Every __getitem__(i) returns the i-th chunk, so the dataset has a
     stable length and can be shuffled by a Sampler.
     """
-    def __init__(self, bin_path: str, block_size: int, stride: int | None = None):
+    def __init__(self, bin_path: str, sequence_len: int, stride: int | None = None):
         self.data       = np.memmap(bin_path, dtype=np.uint16, mode='r')
-        self.block_size = block_size
-        self.stride     = stride or block_size        # stride=block_size ⇒ no overlap
-        self.n_chunks   = (len(self.data) - 1 - block_size) // self.stride + 1
+        self.sequence_len = sequence_len
+        self.stride     = stride or sequence_len        # stride=sequence_len ⇒ no overlap
+        self.n_chunks   = (len(self.data) - 1 - sequence_len) // self.stride + 1
 
     def __len__(self):
         return self.n_chunks
 
     def __getitem__(self, idx: int):
         start = idx * self.stride
-        x = torch.from_numpy(self.data[start : start + self.block_size]).long()
-        y = torch.from_numpy(self.data[start + 1 : start + self.block_size + 1]).long()
+        x = torch.from_numpy(self.data[start : start + self.sequence_len]).long()
+        y = torch.from_numpy(self.data[start + 1 : start + self.sequence_len + 1]).long()
         return x, y
 
 class BoundaryChunkDataset(torch.utils.data.Dataset):
@@ -174,7 +174,7 @@ def get_dataloader(
     data_dir: str,
     split: str = "train", 
     batch_size: int = 32,
-    block_size: int = 1024,
+    sequence_len: int = 1024,
     num_workers: int = 0,
     shuffle: bool = True
 ) -> DataLoader:
@@ -185,12 +185,12 @@ def get_dataloader(
         data_dir: Directory containing the .bin files
         split: "train" or "validation" 
         batch_size: Batch size
-        block_size: Sequence length
+        sequence_len: Sequence length
         num_workers: Number of DataLoader workers
         shuffle: Whether to shuffle 
     
     Returns:
-        DataLoader yielding (x, y) tensors of shape (batch_size, block_size)
+        DataLoader yielding (x, y) tensors of shape (batch_size, sequence_len)
     """
     # Check for .bin file
     bin_path = os.path.join(data_dir, f'{split}.bin')
@@ -201,7 +201,7 @@ def get_dataloader(
         )
     
     # Load dataset and create dataloader
-    dataset = ChunkDataset(bin_path, block_size)
+    dataset = ChunkDataset(bin_path, sequence_len)
     print(f"Loaded {split} data: {len(dataset.data):,} tokens")
 
     dataloader = DataLoader(
@@ -239,7 +239,7 @@ if __name__ == "__main__":
         data_dir=data_dir,
         split="train", 
         batch_size=2,  # 2 sequences
-        block_size=512,  # 512 tokens each
+        sequence_len=512,  # 512 tokens each
         num_workers=0,  # Keep at 0 for testing to avoid overhead
     )
     

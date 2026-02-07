@@ -10,7 +10,7 @@ class GPTConfig(PretrainedConfig):
     
     def __init__(
         self,
-        block_size: int = 1024,
+        sequence_len: int = 1024,
         vocab_size: int = 50304,  # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
         n_layer: int = 10,
         n_head: int = 12,
@@ -55,7 +55,7 @@ class GPTConfig(PretrainedConfig):
         
         super().__init__(**kwargs)
         
-        self.block_size = block_size
+        self.sequence_len = sequence_len
         self.vocab_size = vocab_size
         self.n_layer = n_layer
         self.n_head = n_head

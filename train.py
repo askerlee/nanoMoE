@@ -352,7 +352,7 @@ log_grad_stats = False # Use command line to override this if needed.
 datasets = ['fineweb_edu-50B'] #, 'openwebtext'] #'tinystories', 'openwebtext', 'fineweb_edu-30B', 'fineweb_edu-50B'
 gradient_accumulation_steps = 2 # used to simulate larger batch sizes
 batch_size = 12     # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 1024   # Training tokens per sample
+sequence_len = 1024   # Training tokens per sample
 
 # model
 n_layer = 12
@@ -518,13 +518,13 @@ for dataset in datasets:
     val_bin_path = os.path.join(data_dir, val_filename)
 
     if "math" not in dataset:
-        train_dataset = ChunkDataset(train_bin_path, block_size)
-        val_dataset = ChunkDataset(val_bin_path, block_size)
+        train_dataset = ChunkDataset(train_bin_path, sequence_len)
+        val_dataset = ChunkDataset(val_bin_path, sequence_len)
     else:
         train_idx_path = train_bin_path.replace('.bin', '.idx')
         val_idx_path   = val_bin_path.replace('.bin', '.idx')
-        train_dataset  = BoundaryChunkDataset(train_bin_path, train_idx_path, block_size)
-        val_dataset    = BoundaryChunkDataset(val_bin_path, val_idx_path, block_size)
+        train_dataset  = BoundaryChunkDataset(train_bin_path, train_idx_path, sequence_len)
+        val_dataset    = BoundaryChunkDataset(val_bin_path, val_idx_path, sequence_len)
 
     print(f"Loaded dataset {dataset_} ({train_bin_path}, {val_bin_path}):")
     print(f"  train tokens: {len(train_dataset.data):,}")
@@ -541,7 +541,7 @@ combined_train_dataset = torch.utils.data.ConcatDataset(train_datasets)
 
 # Don't use shuffle=True, use sampler instead for reproducible shuffling.
 # batch_size = 64
-# block_size = 1024
+# sequence_len = 1024
 # Each batch contains 64*1024 = 64K tokens.
 train_sampler = get_epoch_sampler(combined_train_dataset, epoch=0, seed=seed, 
                                    ddp_world_size=ddp_world_size, ddp_rank=ddp_rank if ddp else 0)
@@ -573,7 +573,7 @@ print(f"Validation batches per eval: {len(val_loader)}")
 # Calculate epoch parameters
 iters_per_epoch = len(train_loader)
 total_iters = int(num_epochs * iters_per_epoch)
-tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
+tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * sequence_len
 warmup_iters = int(warmup_tokens / tokens_per_iter)  # Convert tokens to iterations
 decay_iters = int(decay_frac * total_iters)
 decay_start = total_iters - decay_iters
@@ -608,7 +608,7 @@ start_epoch = 0
 start_batch_idx = 0
 
 # model init
-model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
+model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, sequence_len=sequence_len,
                   vocab_size=None, n_exp=n_exp, moe_top_k=moe_top_k,
                   use_aux_loss=use_aux_loss, use_router_z_loss=use_router_z_loss,
                   use_logits_demeaned_z_loss=use_logits_demeaned_z_loss,
@@ -694,9 +694,9 @@ else:
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
     # crop down the model block size if desired, using model surgery
-    if block_size < model.config.block_size:
-        model.crop_block_size(block_size)
-        model_args['block_size'] = block_size # so that the checkpoint will have the right value
+    if sequence_len < model.config.sequence_len:
+        model.crop_block_size(sequence_len)
+        model_args['sequence_len'] = sequence_len # so that the checkpoint will have the right value
     model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
@@ -854,7 +854,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 log_data = {
                     "val/loss": val_losses['ntp_loss'],
                     "val/eval_count": eval_count,
-                    "tokens_seen": persist_global_iter * batch_size * block_size,
+                    "tokens_seen": persist_global_iter * batch_size * sequence_len,
                 }
                 drop_rates = val_losses['drop_rate_per_ks']
                 if drop_rates is not None:
@@ -884,7 +884,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                 
                 # Save tokenizer files
                 tokenizer = GPT2TokenizerFast.from_pretrained("gpt2")
-                tokenizer.model_max_length = block_size
+                tokenizer.model_max_length = sequence_len
                 tokenizer.save_pretrained(ckpt_dir)
                 
                 # Copy necessary files for trust_remote_code loading
@@ -974,7 +974,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
             lossf = loss.item() * gradient_accumulation_steps
             grad_normf = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else None
             # compute tokens per second for this iteration (raw)
-            tokens_ps = (batch_size * block_size) / dt if dt > 0 else 0.0
+            tokens_ps = (batch_size * sequence_len) / dt if dt > 0 else 0.0
 
             # update running averages once the loop has warmed up a few iterations (parallels MFU logic)
             if global_iter >= 5:  # let the training loop settle a bit before smoothing
@@ -1003,7 +1003,7 @@ for epoch in range(start_epoch, math.ceil(num_epochs)):
                     "mfu": running_mfu*100,
                     "tok_per_sec": running_tokens_per_sec,
                     "time_ms": dt*1000,
-                    "tokens_seen": persist_global_iter * batch_size * block_size,
+                    "tokens_seen": persist_global_iter * batch_size * sequence_len,
                 }
                 drop_rates = losses['drop_rate_per_ks']
                 if drop_rates is not None:

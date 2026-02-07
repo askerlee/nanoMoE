@@ -691,7 +691,7 @@ class GPT(PreTrainedModel, GenerationMixin):
     def __init__(self, config):
         super().__init__(config)
         assert config.vocab_size is not None
-        assert config.block_size is not None
+        assert config.sequence_len is not None
 
         if config.n_exp == 1:
             # create normal transformer blocks
@@ -708,7 +708,7 @@ class GPT(PreTrainedModel, GenerationMixin):
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
+            wpe = nn.Embedding(config.sequence_len, config.n_embd),
             h = blocks,
             ln_f = nn.RMSNorm(config.n_embd, eps=1e-6, elementwise_affine=True),
         ))
@@ -1094,7 +1094,7 @@ class GPT(PreTrainedModel, GenerationMixin):
         
         device = input_ids.device
         b, t = input_ids.size()
-        assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
+        assert t <= self.config.sequence_len, f"Cannot forward sequence of length {t}, block size is only {self.config.sequence_len}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
         # forward the GPT model itself
@@ -1283,16 +1283,16 @@ class GPT(PreTrainedModel, GenerationMixin):
         losses['exp_gate_grad_norms'] = exp_gate_grad_norms
         breakpoint()
 
-    def crop_block_size(self, block_size):
+    def crop_block_size(self, sequence_len):
         # model surgery to decrease the block size if necessary
         # e.g. we may load the GPT2 pretrained model checkpoint (block size 1024)
         # but want to use a smaller block size for some smaller, simpler model
-        assert block_size <= self.config.block_size
-        self.config.block_size = block_size
-        self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
+        assert sequence_len <= self.config.sequence_len
+        self.config.sequence_len = sequence_len
+        self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:sequence_len])
         for block in self.transformer.h:
             if hasattr(block.attn, 'bias'):
-                block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]
+                block.attn.bias = block.attn.bias[:,:,:sequence_len,:sequence_len]
 
     # nanochat's generate() is almost identical to nanoMoE's generate(). We only keep nanoMoE's version here.
     @torch.inference_mode()
@@ -1311,8 +1311,8 @@ class GPT(PreTrainedModel, GenerationMixin):
             rng.manual_seed(seed)
         ids = torch.tensor([tokens], dtype=torch.long, device=device) # add batch dim
         for _ in range(max_tokens):
-            # if the sequence context is growing too long we must crop it at block_size
-            idx_cond = ids if ids.size(1) <= self.config.block_size else ids[:, -self.config.block_size:]
+            # if the sequence context is growing too long we must crop it at sequence_len
+            idx_cond = ids if ids.size(1) <= self.config.sequence_len else ids[:, -self.config.sequence_len:]
             # forward the model to get the logits for the index in the sequence
             output = self.forward(idx_cond)
             logits = output.logits # (B, t, vocab_size)
@@ -1340,7 +1340,7 @@ class GPT(PreTrainedModel, GenerationMixin):
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
         cfg = self.config
-        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.block_size
+        L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd//cfg.n_head, cfg.sequence_len
         flops_per_token = 6*N + 12*L*H*Q*T
         flops_per_fwdbwd = flops_per_token * T
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
